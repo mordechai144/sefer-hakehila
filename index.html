@@ -885,33 +885,117 @@ function openUpdateForm() {
       <div class="modal-name" style="margin-top:6px;">עדכון כתובות וטלפונים</div>
     </div>
     <div class="modal-body">
-      <p style="font-size:13px;color:#777;margin-top:0;">מלאו את הפרטים ולחצו "שליחה" — ייפתח אצלכם המייל עם ההודעה מוכנה, ורק תצטרכו לאשר שליחה.</p>
+      <p style="font-size:13px;color:#777;margin-top:0;">מלאו את הפרטים ולחצו "שליחה" — ההודעה תישלח אוטומטית, בלי שתצטרכו לעשות שום דבר נוסף.</p>
       <div class="form-group"><label>שם מלא (של השולח)</label><input id="u_sender"></div>
       <div class="form-group"><label>שם איש הקשר / המוסד לעדכון</label><input id="u_name"></div>
       <div class="form-group"><label>מה לעדכן? (טלפון/כתובת ישנים וחדשים)</label><textarea id="u_details" rows="4" placeholder="לדוגמה: הטלפון השתנה מ-05X-XXXXXXX ל-05X-XXXXXXX"></textarea></div>
       <div class="form-actions">
         <button class="btn-secondary" onclick="closeAllOverlays()">ביטול</button>
-        <button class="btn-primary" onclick="sendUpdateEmail()">שליחה במייל</button>
+        <button class="btn-primary" id="u_send_btn" onclick="sendUpdateEmail()">שליחה</button>
       </div>
+      <div id="u_send_status" style="font-size:12px;color:#777;margin-top:6px;height:14px;"></div>
     </div>
   `;
   document.getElementById('formOverlay').classList.add('show');
 }
 
-function sendUpdateEmail() {
+async function sendUpdateEmail() {
   const sender = document.getElementById('u_sender').value.trim();
   const name = document.getElementById('u_name').value.trim();
   const details = document.getElementById('u_details').value.trim();
   if (!name || !details) { alert('נא למלא לפחות את שם איש הקשר ואת פרטי העדכון'); return; }
-  const subject = encodeURIComponent('עדכון פרטים - ספר הקהילה: ' + name);
+  const targetEmail = 'ari0583244028@gmail.com';
+  const subjectText = 'עדכון פרטים - ספר הקהילה: ' + name;
   const bodyLines = [
     'שם איש קשר / מוסד: ' + name,
     'פרטי העדכון: ' + details,
     'נשלח על ידי: ' + (sender || '(לא צוין)')
   ];
-  const body = encodeURIComponent(bodyLines.join('\n'));
-  window.location.href = 'mailto:MB0533182171@GMAIL.COM?subject=' + subject + '&body=' + body;
-  closeAllOverlays();
+  const bodyText = bodyLines.join('\n');
+
+  const sendBtn = document.getElementById('u_send_btn');
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'שולח...'; }
+
+  // Primary path: send automatically in the background via Formspree.
+  try {
+    const resp = await fetch('https://formspree.io/f/mrpgrypy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({
+        subject: subjectText,
+        name: name,
+        sender: sender || '(לא צוין)',
+        details: details,
+        message: bodyText
+      })
+    });
+    if (resp.ok) {
+      showUpdateResult(true, targetEmail, subjectText, bodyText);
+      return;
+    }
+    throw new Error('Formspree request failed with status ' + resp.status);
+  } catch (e) {
+    // Fallback path: try to open the mail app, and always show a copyable
+    // message so the update is never lost even if both methods fail.
+    const mailtoLink = 'mailto:' + targetEmail + '?subject=' + encodeURIComponent(subjectText) + '&body=' + encodeURIComponent(bodyText);
+    try { window.location.href = mailtoLink; } catch (e2) { /* ignore */ }
+    showUpdateResult(false, targetEmail, subjectText, bodyText);
+  }
+}
+
+function showUpdateResult(success, targetEmail, subjectText, bodyText) {
+  const modal = document.getElementById('formModal');
+  const fullText = 'אל: ' + targetEmail + '\nנושא: ' + subjectText + '\n\n' + bodyText;
+  if (success) {
+    modal.innerHTML = `
+      <div class="modal-header">
+        <button class="modal-close" onclick="closeAllOverlays()">&times;</button>
+        <div class="modal-name" style="margin-top:6px;">נשלח בהצלחה!</div>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:14px;color:#2a7a2a;margin-top:0;">&#10003; ההודעה נשלחה אוטומטית. תודה על העדכון!</p>
+        <div class="form-actions">
+          <button class="btn-primary" onclick="closeAllOverlays()">סגירה</button>
+        </div>
+      </div>
+    `;
+  } else {
+    modal.innerHTML = `
+      <div class="modal-header">
+        <button class="modal-close" onclick="closeAllOverlays()">&times;</button>
+        <div class="modal-name" style="margin-top:6px;">ההודעה מוכנה</div>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:13px;color:#777;margin-top:0;">השליחה האוטומטית לא הצליחה הפעם. אם אפליקציית המייל שלכם לא נפתחה אצלכם - העתיקו את הטקסט הבא ושלחו אותו בעצמכם ל-<b>${targetEmail}</b>:</p>
+        <textarea id="u_fallback_text" readonly rows="7" style="width:100%;box-sizing:border-box;font-family:inherit;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:6px;background:#f7f7f7;">${fullText}</textarea>
+        <div class="form-actions">
+          <button class="btn-secondary" onclick="closeAllOverlays()">סגירה</button>
+          <button class="btn-primary" onclick="copyUpdateText()">העתקת הטקסט</button>
+        </div>
+        <div id="u_copy_status" style="font-size:12px;color:#2a7a2a;margin-top:6px;height:14px;"></div>
+      </div>
+    `;
+  }
+  document.getElementById('formOverlay').classList.add('show');
+}
+
+function copyUpdateText() {
+  const ta = document.getElementById('u_fallback_text');
+  const status = document.getElementById('u_copy_status');
+  ta.select();
+  ta.setSelectionRange(0, 999999);
+  let copied = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(ta.value);
+      copied = true;
+    } else {
+      copied = document.execCommand('copy');
+    }
+  } catch (e) {
+    copied = false;
+  }
+  if (status) status.textContent = copied ? 'הטקסט הועתק!' : 'סמנו את הטקסט ולחצו Ctrl+C להעתקה';
 }
 
 function goToInstitution(query) {

@@ -875,6 +875,13 @@ function renderHome(container) {
           <div class="home-tile-sub">יש לכם רעיון? נשמח לשמוע</div>
         </div>
       </div>
+      <div class="home-tile wide" onclick="openCommunityBoard()">
+        <div class="home-tile-icon">&#128247;</div>
+        <div class="home-tile-text">
+          <div class="home-tile-title">תמונות וחדשות קהילה</div>
+          <div class="home-tile-sub">עדכונים אחרונים מהקהילה</div>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -1170,6 +1177,200 @@ document.getElementById('detailOverlay').addEventListener('click', e => { if (e.
 document.getElementById('formOverlay').addEventListener('click', e => { if (e.target.id === 'formOverlay') closeAllOverlays(); });
 
 switchTab('home');
+</script>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
+import { getFirestore, collection, addDoc, getDocs, query, orderBy, Timestamp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAx_04slUn08gq-4vE-xuNBo4vimkWBgwg",
+  authDomain: "sefer-hakehila.firebaseapp.com",
+  projectId: "sefer-hakehila",
+  storageBucket: "sefer-hakehila.firebasestorage.app",
+  messagingSenderId: "770111085290",
+  appId: "1:770111085290:web:130af92bdc8a2117205593"
+};
+const fbApp = initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
+const auth = getAuth(fbApp);
+
+let isAdmin = false;
+onAuthStateChanged(auth, (user) => {
+  isAdmin = !!user;
+  if (document.getElementById('formOverlay').classList.contains('show') && document.getElementById('communityBoard')) {
+    communityRenderBoard();
+  }
+});
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+let communityPostsCache = [];
+
+function communityFormatDate(ts) {
+  try {
+    const d = ts.toDate ? ts.toDate() : new Date(ts);
+    return d.toLocaleDateString('he-IL');
+  } catch (e) { return ''; }
+}
+
+window.openCommunityBoard = async function() {
+  const modal = document.getElementById('formModal');
+  modal.innerHTML = `
+    <div class="modal-header">
+      <button class="modal-close" onclick="closeAllOverlays()">&times;</button>
+      <div class="modal-name" style="margin-top:6px;">תמונות וחדשות קהילה</div>
+    </div>
+    <div class="modal-body">
+      <div id="communityBoard"><p style="font-size:13px;color:#777;">טוען...</p></div>
+    </div>
+  `;
+  document.getElementById('formOverlay').classList.add('show');
+  await communityLoadPosts();
+};
+
+async function communityLoadPosts() {
+  try {
+    const q = query(collection(db, 'community_posts'), orderBy('createdAt', 'desc'));
+    const snap = await getDocs(q);
+    const now = Date.now();
+    communityPostsCache = [];
+    snap.forEach(docSnap => {
+      const data = docSnap.data();
+      if (!data.createdAt) return;
+      const created = data.createdAt.toDate ? data.createdAt.toDate().getTime() : new Date(data.createdAt).getTime();
+      if (now - created <= SEVEN_DAYS_MS) {
+        communityPostsCache.push({ id: docSnap.id, ...data, _created: created });
+      }
+    });
+  } catch (e) {
+    communityPostsCache = [];
+  }
+  communityRenderBoard();
+}
+
+window.communityRenderBoard = function() {
+  const el = document.getElementById('communityBoard');
+  if (!el) return;
+  let html = '';
+
+  if (isAdmin) {
+    html += `
+      <div style="background:#f7f7f7;border-radius:8px;padding:10px;margin-bottom:14px;">
+        <div style="font-size:13px;color:#2a7a2a;margin-bottom:8px;">מחובר כמנהל</div>
+        <div class="form-group"><label>כיתוב</label><textarea id="c_caption" rows="2" placeholder="מה קורה בקהילה?"></textarea></div>
+        <div class="form-group"><label>תמונה</label><input type="file" id="c_file" accept="image/*"></div>
+        <div class="form-actions">
+          <button class="btn-secondary" onclick="communityLogout()">התנתקות</button>
+          <button class="btn-primary" id="c_post_btn" onclick="communitySubmitPost()">פרסום</button>
+        </div>
+        <div id="c_post_status" style="font-size:12px;color:#777;margin-top:6px;height:14px;"></div>
+      </div>
+    `;
+  } else {
+    html += `
+      <div style="background:#f7f7f7;border-radius:8px;padding:10px;margin-bottom:14px;">
+        <div style="font-size:12px;color:#777;margin-bottom:8px;">כניסת מנהל (להוספת תוכן)</div>
+        <div class="form-group"><input id="c_email" placeholder="אימייל" style="margin-bottom:6px;"></div>
+        <div class="form-group"><input id="c_password" type="password" placeholder="סיסמה"></div>
+        <div class="form-actions">
+          <button class="btn-primary" onclick="communityLogin()">כניסה</button>
+        </div>
+        <div id="c_login_status" style="font-size:12px;color:#a33;margin-top:6px;height:14px;"></div>
+      </div>
+    `;
+  }
+
+  if (communityPostsCache.length === 0) {
+    html += '<p style="font-size:13px;color:#777;text-align:center;">אין עדכונים בשבוע האחרון</p>';
+  } else {
+    communityPostsCache.forEach(post => {
+      html += `
+        <div style="border:1px solid #eee;border-radius:8px;overflow:hidden;margin-bottom:14px;">
+          ${post.image ? `<img src="${post.image}" style="width:100%;display:block;">` : ''}
+          <div style="padding:10px;">
+            <div style="font-size:13px;">${(post.caption || '').replace(/</g, '&lt;')}</div>
+            <div style="font-size:11px;color:#999;margin-top:4px;">${communityFormatDate(post.createdAt)}</div>
+          </div>
+        </div>
+      `;
+    });
+  }
+  el.innerHTML = html;
+};
+
+window.communityLogin = async function() {
+  const email = document.getElementById('c_email').value.trim();
+  const password = document.getElementById('c_password').value;
+  const status = document.getElementById('c_login_status');
+  if (!email || !password) { status.textContent = 'נא למלא אימייל וסיסמה'; return; }
+  try {
+    await signInWithEmailAndPassword(auth, email, password);
+    isAdmin = true;
+    communityRenderBoard();
+  } catch (e) {
+    status.textContent = 'התחברות נכשלה - בדקו אימייל/סיסמה';
+  }
+};
+
+window.communityLogout = async function() {
+  await signOut(auth);
+  isAdmin = false;
+  communityRenderBoard();
+};
+
+window.communitySubmitPost = async function() {
+  const caption = document.getElementById('c_caption').value.trim();
+  const fileInput = document.getElementById('c_file');
+  const file = fileInput.files[0];
+  const status = document.getElementById('c_post_status');
+  const btn = document.getElementById('c_post_btn');
+  if (!caption && !file) { status.textContent = 'נא להוסיף תמונה או כיתוב'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'מפרסם...';
+  status.textContent = '';
+
+  try {
+    let imageData = null;
+    if (file) {
+      imageData = await communityCompressImage(file);
+    }
+    await addDoc(collection(db, 'community_posts'), {
+      caption: caption,
+      image: imageData,
+      createdAt: Timestamp.now()
+    });
+    await communityLoadPosts();
+  } catch (e) {
+    status.textContent = 'הפרסום נכשל, נסו שוב';
+    btn.disabled = false;
+    btn.textContent = 'פרסום';
+  }
+};
+
+function communityCompressImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 900;
+        let w = img.width, h = img.height;
+        if (w > h && w > maxDim) { h = h * maxDim / w; w = maxDim; }
+        else if (h > maxDim) { w = w * maxDim / h; h = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.6));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 </script>
 </body>
 </html>

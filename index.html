@@ -1748,6 +1748,7 @@ window.communityRenderBoard = function() {
     html += `
       <div style="background:#f7f7f7;border-radius:8px;padding:10px;margin-bottom:14px;">
         <div style="font-size:13px;color:#2a7a2a;margin-bottom:8px;">מחובר כמנהל</div>
+        <div id="newVisitorsPanel"></div>
         <div class="form-group">
           <label>כיתוב</label>
           <div style="margin-bottom:4px;">
@@ -1801,6 +1802,7 @@ window.communityRenderBoard = function() {
     });
   }
   el.innerHTML = html;
+  if (isAdmin) loadNewVisitorsAndMarkSeen();
 };
 
 window.communityDeletePost = async function(postId) {
@@ -2018,6 +2020,36 @@ window.submitRegistration = function() {
     email: email,
     createdAt: Timestamp.now()
   }).catch(() => {});
+};
+
+window.loadNewVisitorsAndMarkSeen = async function() {
+  const el = document.getElementById('newVisitorsPanel');
+  if (!el) return;
+  const lastSeen = parseInt(localStorage.getItem('lastSeenVisitorsAt') || '0', 10);
+  try {
+    const q = query(collection(db, 'community_visitors'), orderBy('createdAt', 'desc'));
+    const snap = await getDocs(q);
+    const all = [];
+    snap.forEach(docSnap => all.push(docSnap.data()));
+    const newOnes = all.filter(v => {
+      const t = v.createdAt && v.createdAt.toDate ? v.createdAt.toDate().getTime() : 0;
+      return t > lastSeen;
+    });
+    if (newOnes.length === 0) {
+      el.innerHTML = '';
+    } else {
+      let html = `<div style="background:#fff6de;border:1px solid var(--gold);border-radius:8px;padding:10px;margin-bottom:12px;">
+        <div style="font-size:13px;font-weight:800;color:var(--navy);margin-bottom:6px;">🆕 נרשמו מאז הביקור הקודם שלך: ${newOnes.length}</div>`;
+      newOnes.forEach(v => {
+        html += `<div style="font-size:12.5px;padding:4px 0;border-top:1px solid rgba(199,162,74,0.3);">
+          <b>${(v.name || '').replace(/</g,'&lt;')}</b> — ${(v.phone || '').replace(/</g,'&lt;')} — ${(v.email || '').replace(/</g,'&lt;')}
+        </div>`;
+      });
+      html += '</div>';
+      el.innerHTML = html;
+    }
+    localStorage.setItem('lastSeenVisitorsAt', String(Date.now()));
+  } catch (e) { /* ignore */ }
 };
 
 window.loadAndShowVisitors = async function() {

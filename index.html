@@ -395,6 +395,78 @@
     inset: 0;
     background: radial-gradient(circle at 30% 20%, rgba(225,198,133,0.25), transparent 60%);
   }
+  .register-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9998;
+    background: rgba(23,35,63,0.97);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .register-overlay.show { display: flex; }
+  .register-box {
+    background: var(--cream);
+    border-radius: 14px;
+    padding: 26px 22px;
+    max-width: 360px;
+    width: 100%;
+    border: 1px solid rgba(199,162,74,0.5);
+  }
+  .register-title {
+    font-size: 19px;
+    font-weight: 800;
+    color: var(--navy);
+    text-align: center;
+    margin-bottom: 6px;
+  }
+  .register-sub {
+    font-size: 12.5px;
+    color: #777;
+    text-align: center;
+    margin-bottom: 18px;
+  }
+  .install-banner {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 500;
+    background: linear-gradient(135deg, var(--navy), var(--navy-light));
+    border-top: 2px solid var(--gold);
+    padding: 12px 16px;
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    box-shadow: 0 -4px 14px rgba(0,0,0,0.3);
+  }
+  .install-banner.show { display: flex; }
+  .install-banner-text {
+    color: var(--cream);
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .install-banner-btn {
+    background: var(--gold);
+    color: var(--navy);
+    border: none;
+    border-radius: 20px;
+    padding: 10px 18px;
+    font-weight: 800;
+    font-size: 14px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .install-banner-close {
+    background: none;
+    border: none;
+    color: var(--cream);
+    font-size: 18px;
+    opacity: 0.6;
+    cursor: pointer;
+    padding: 4px 6px;
+  }
   .admin-corner {
     position: absolute;
     top: 8px;
@@ -669,11 +741,13 @@
     height: 120px;
     object-fit: contain;
     z-index: 2;
-    animation: splashPop 1.1s cubic-bezier(.34,1.56,.64,1) both, splashGlow 2.2s ease-in-out infinite 1.1s;
+    animation: splashJourney 3.2s cubic-bezier(.45,.05,.35,1) both, splashGlow 2.2s ease-in-out infinite 1.1s;
   }
-  @keyframes splashPop {
+  @keyframes splashJourney {
     0% { transform: scale(0.3) rotate(-8deg); opacity: 0; }
-    60% { transform: scale(1.12) rotate(3deg); opacity: 1; }
+    16% { transform: scale(1.12) rotate(3deg); opacity: 1; }
+    28% { transform: scale(1) rotate(0deg); opacity: 1; }
+    62% { transform: scale(1.4) rotate(0deg); opacity: 1; }
     100% { transform: scale(1) rotate(0deg); opacity: 1; }
   }
   @keyframes splashGlow {
@@ -716,6 +790,22 @@
 </head>
 <body>
 
+<div class="register-overlay" id="registerOverlay">
+  <div class="register-box">
+    <div class="register-title">ברוכים הבאים!</div>
+    <div class="register-sub">לפני שממשיכים, נא למלא פרטים קצרים</div>
+    <div class="form-group"><label>שם פרטי ומשפחה</label><input id="reg_name"></div>
+    <div class="form-group"><label>טלפון</label><input id="reg_phone" type="tel"></div>
+    <div class="form-group"><label>אימייל</label><input id="reg_email" type="email"></div>
+    <button class="btn-primary" style="width:100%;margin-top:10px;" onclick="submitRegistration()">כניסה</button>
+    <div id="reg_status" style="font-size:12px;color:#a33;margin-top:8px;height:14px;text-align:center;"></div>
+  </div>
+</div>
+<div class="install-banner" id="installBanner">
+  <button class="install-banner-close" onclick="dismissInstallBanner()">&times;</button>
+  <div class="install-banner-text">התקינו את "ספר הקהילה" כאפליקציה<br>על שולחן העבודה שלכם</div>
+  <button class="install-banner-btn" onclick="triggerInstall()">התקנה</button>
+</div>
 <div class="splash-screen" id="splashScreen">
   <div class="splash-crown-wrap">
     <div class="splash-ring r1"></div>
@@ -1353,13 +1443,75 @@ document.getElementById('formOverlay').addEventListener('click', e => { if (e.ta
 
 switchTab('home');
 
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (!localStorage.getItem('installBannerDismissed')) {
+    setTimeout(() => {
+      const banner = document.getElementById('installBanner');
+      if (banner) banner.classList.add('show');
+    }, 4200);
+  }
+});
+
+window.triggerInstall = async function() {
+  const banner = document.getElementById('installBanner');
+  if (!deferredInstallPrompt) {
+    if (banner) banner.classList.remove('show');
+    return;
+  }
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  if (banner) banner.classList.remove('show');
+};
+
+window.dismissInstallBanner = function() {
+  const banner = document.getElementById('installBanner');
+  if (banner) banner.classList.remove('show');
+  try { localStorage.setItem('installBannerDismissed', '1'); } catch(e) {}
+};
+
+window.addEventListener('appinstalled', () => {
+  const banner = document.getElementById('installBanner');
+  if (banner) banner.classList.remove('show');
+});
+
 setTimeout(() => {
   const splash = document.getElementById('splashScreen');
   if (splash) {
     splash.classList.add('hide');
     setTimeout(() => splash.remove(), 850);
   }
-}, 3600);
+  if (!localStorage.getItem('visitorRegistered')) {
+    const reg = document.getElementById('registerOverlay');
+    if (reg) reg.classList.add('show');
+  }
+}, 4300);
+
+function submitRegistration() {
+  const name = document.getElementById('reg_name').value.trim();
+  const phone = document.getElementById('reg_phone').value.trim();
+  const email = document.getElementById('reg_email').value.trim();
+  const status = document.getElementById('reg_status');
+  if (!name || !phone || !email) {
+    status.textContent = 'נא למלא את כל השדות';
+    return;
+  }
+  localStorage.setItem('visitorRegistered', '1');
+  document.getElementById('registerOverlay').classList.remove('show');
+  fetch('https://formspree.io/f/mrpgrypy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({
+      subject: 'משתמש חדש נכנס - ספר הקהילה',
+      name: name,
+      phone: phone,
+      email: email
+    })
+  }).catch(() => {});
+}
 </script>
 
 <script type="module">

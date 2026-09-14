@@ -1463,12 +1463,10 @@ let deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
-  if (!localStorage.getItem('installBannerDismissed')) {
-    setTimeout(() => {
-      const banner = document.getElementById('installBanner');
-      if (banner) banner.classList.add('show');
-    }, 4200);
-  }
+  setTimeout(() => {
+    const banner = document.getElementById('installBanner');
+    if (banner) banner.classList.add('show');
+  }, 4200);
 });
 
 window.triggerInstall = async function() {
@@ -1486,7 +1484,6 @@ window.triggerInstall = async function() {
 window.dismissInstallBanner = function() {
   const banner = document.getElementById('installBanner');
   if (banner) banner.classList.remove('show');
-  try { localStorage.setItem('installBannerDismissed', '1'); } catch(e) {}
 };
 
 window.addEventListener('appinstalled', () => {
@@ -1500,11 +1497,14 @@ setTimeout(() => {
     splash.classList.add('hide');
     setTimeout(() => splash.remove(), 850);
   }
+}, 6400);
+
+setTimeout(() => {
   if (!localStorage.getItem('visitorRegistered')) {
     const reg = document.getElementById('registerOverlay');
     if (reg) reg.classList.add('show');
   }
-}, 6400);
+}, 24400);
 
 </script>
 

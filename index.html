@@ -657,13 +657,39 @@
     height: 74px;
     font-size: 32px;
     margin-bottom: 14px;
+    background: linear-gradient(150deg, var(--navy), var(--navy-light));
   }
   .home-grid > .home-tile:nth-child(1) .home-tile-title {
     font-size: 17px;
   }
   .home-grid > .home-tile:nth-child(2) { grid-area: b; }
+  .home-grid > .home-tile:nth-child(2) .home-tile-icon {
+    background: linear-gradient(150deg, #2f6b4f, #4a8f6c);
+    box-shadow: 0 0 0 4px rgba(74,143,108,0.15);
+  }
   .home-grid > .home-tile:nth-child(3) { grid-area: c; }
+  .home-grid > .home-tile:nth-child(3) .home-tile-icon {
+    background: linear-gradient(150deg, #5c1f2e, #8a3348);
+    box-shadow: 0 0 0 4px rgba(138,51,72,0.15);
+  }
   .home-grid > .home-tile:nth-child(4) { grid-area: d; }
+  .home-grid > .home-tile:nth-child(4) .home-tile-icon {
+    background: linear-gradient(150deg, var(--gold), var(--gold-light));
+    color: var(--navy);
+    box-shadow: 0 0 0 4px rgba(199,162,74,0.18);
+  }
+  .home-grid > .home-tile {
+    opacity: 0;
+    animation: tileFadeUp 0.5s ease forwards;
+  }
+  .home-grid > .home-tile:nth-child(1) { animation-delay: 0.05s; }
+  .home-grid > .home-tile:nth-child(2) { animation-delay: 0.13s; }
+  .home-grid > .home-tile:nth-child(3) { animation-delay: 0.21s; }
+  .home-grid > .home-tile:nth-child(4) { animation-delay: 0.29s; }
+  @keyframes tileFadeUp {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
   .home-tile {
     background: linear-gradient(160deg, #fffefc, #faf3e2);
     border: 1px solid rgba(199,162,74,0.35);
@@ -680,7 +706,11 @@
     box-shadow: 0 10px 22px rgba(23,35,63,0.15);
     border-color: var(--gold);
   }
+  .home-tile:hover .home-tile-icon {
+    transform: scale(1.08) rotate(-4deg);
+  }
   .home-tile-icon {
+    transition: transform 0.18s ease;
     width: 56px;
     height: 56px;
     border-radius: 50%;
@@ -1616,7 +1646,7 @@ setTimeout(() => {
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
-import { getFirestore, collection, addDoc, getDocs, query, orderBy, Timestamp, updateDoc, arrayUnion, doc } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { getFirestore, collection, addDoc, getDocs, query, orderBy, Timestamp, updateDoc, arrayUnion, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -1642,6 +1672,29 @@ onAuthStateChanged(auth, (user) => {
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 let communityPostsCache = [];
+
+function formatCaptionText(text) {
+  let escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  escaped = escaped.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  escaped = escaped.replace(/\n/g, '<br>');
+  return escaped;
+}
+
+window.wrapCaptionSelection = function(textareaId, marker) {
+  const ta = document.getElementById(textareaId);
+  if (!ta) return;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  const val = ta.value;
+  const selected = val.slice(start, end) || 'טקסט';
+  ta.value = val.slice(0, start) + marker + selected + marker + val.slice(end);
+  ta.focus();
+  ta.selectionStart = start + marker.length;
+  ta.selectionEnd = start + marker.length + selected.length;
+};
 
 function communityFormatDate(ts) {
   try {
@@ -1695,7 +1748,14 @@ window.communityRenderBoard = function() {
     html += `
       <div style="background:#f7f7f7;border-radius:8px;padding:10px;margin-bottom:14px;">
         <div style="font-size:13px;color:#2a7a2a;margin-bottom:8px;">מחובר כמנהל</div>
-        <div class="form-group"><label>כיתוב</label><textarea id="c_caption" rows="2" placeholder="מה קורה בקהילה?"></textarea></div>
+        <div class="form-group">
+          <label>כיתוב</label>
+          <div style="margin-bottom:4px;">
+            <button type="button" onclick="wrapCaptionSelection('c_caption','**')" style="font-weight:800;border:1px solid #ccc;border-radius:5px;background:#fff;padding:4px 10px;cursor:pointer;margin-left:6px;">B</button>
+            <span style="font-size:11px;color:#999;">סמנו טקסט ולחצו B להדגשה, או כתבו **כך** בעצמכם</span>
+          </div>
+          <textarea id="c_caption" rows="2" placeholder="מה קורה בקהילה?"></textarea>
+        </div>
         <div class="form-group"><label>תמונה</label><input type="file" id="c_file" accept="image/*"></div>
         <div class="form-actions">
           <button class="btn-secondary" onclick="communityLogout()">התנתקות</button>
@@ -1726,14 +1786,27 @@ window.communityRenderBoard = function() {
         <div style="border:1px solid rgba(199,162,74,0.4);border-radius:14px;overflow:hidden;margin-bottom:18px;box-shadow:0 3px 10px rgba(0,0,0,0.08);background:#fff;">
           ${post.image ? `<img src="${post.image}" style="width:100%;display:block;max-height:420px;object-fit:cover;">` : ''}
           <div style="padding:14px;">
-            <div style="font-size:15px;line-height:1.5;">${(post.caption || '').replace(/</g, '&lt;')}</div>
-            <div style="font-size:11.5px;color:#999;margin-top:6px;">${communityFormatDate(post.createdAt)}</div>
+            <div style="font-size:15px;line-height:1.5;">${formatCaptionText(post.caption || '')}</div>
+            <div style="font-size:11.5px;color:#999;margin-top:6px;display:flex;align-items:center;justify-content:space-between;">
+              <span>${communityFormatDate(post.createdAt)}</span>
+              ${isAdmin ? `<button onclick="communityDeletePost('${post.id}')" style="border:none;background:none;color:#a33;font-size:12px;cursor:pointer;">מחק</button>` : ''}
+            </div>
           </div>
         </div>
       `;
     });
   }
   el.innerHTML = html;
+};
+
+window.communityDeletePost = async function(postId) {
+  if (!confirm('למחוק את הפוסט הזה לצמיתות?')) return;
+  try {
+    await deleteDoc(doc(db, 'community_posts', postId));
+    await communityLoadPosts();
+  } catch (e) {
+    alert('המחיקה נכשלה, נסו שוב');
+  }
 };
 
 window.communityLogin = async function() {

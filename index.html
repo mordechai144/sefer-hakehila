@@ -1762,6 +1762,10 @@ window.communityRenderBoard = function() {
           <button class="btn-primary" id="c_post_btn" onclick="communitySubmitPost()">פרסום</button>
         </div>
         <div id="c_post_status" style="font-size:12px;color:#777;margin-top:6px;height:14px;"></div>
+        <div style="border-top:1px solid #ddd;margin-top:12px;padding-top:10px;">
+          <button class="btn-secondary" onclick="loadAndShowVisitors()">הצג רשימת נרשמים לאפליקציה</button>
+          <div id="visitorsPanel" style="margin-top:10px;"></div>
+        </div>
       </div>
     `;
   } else if (new URLSearchParams(window.location.search).get('admin') === '1' || window.communityForceAdmin) {
@@ -2008,46 +2012,37 @@ window.submitRegistration = function() {
   localStorage.setItem('visitorRegistered', '1');
   document.getElementById('registerOverlay').classList.remove('show');
 
-  (async () => {
-    try {
-      await addDoc(collection(db, 'community_visitors'), {
-        name: name,
-        phone: phone,
-        email: email,
-        createdAt: Timestamp.now()
-      });
-    } catch (e) { /* ignore, still try to send email below */ }
+  addDoc(collection(db, 'community_visitors'), {
+    name: name,
+    phone: phone,
+    email: email,
+    createdAt: Timestamp.now()
+  }).catch(() => {});
+};
 
-    let totalCount = '?';
-    let namesList = '(לא ניתן היה לטעון את הרשימה)';
-    try {
-      const snap = await getDocs(collection(db, 'community_visitors'));
-      const all = [];
-      snap.forEach(docSnap => {
-        const d = docSnap.data();
-        all.push(d);
-      });
-      totalCount = all.length;
-      namesList = all.map((v, i) => (i + 1) + '. ' + (v.name || '') + ' - ' + (v.phone || '') + ' - ' + (v.email || '')).join('\n');
-    } catch (e) { /* ignore */ }
-
-    const bodyText = 'משתמש חדש נכנס לספר הקהילה:\n' +
-      'שם: ' + name + '\nטלפון: ' + phone + '\nאימייל: ' + email +
-      '\n\nסה"כ נרשמו עד כה: ' + totalCount +
-      '\n\nרשימת כל הנרשמים:\n' + namesList;
-
-    fetch('https://formspree.io/f/mrpgrypy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({
-        subject: 'משתמש חדש נכנס - ספר הקהילה (סה"כ ' + totalCount + ')',
-        name: name,
-        phone: phone,
-        email: email,
-        message: bodyText
-      })
-    }).catch(() => {});
-  })();
+window.loadAndShowVisitors = async function() {
+  const el = document.getElementById('visitorsPanel');
+  if (!el) return;
+  el.innerHTML = '<p style="font-size:12px;color:#777;">טוען...</p>';
+  try {
+    const q = query(collection(db, 'community_visitors'), orderBy('createdAt', 'desc'));
+    const snap = await getDocs(q);
+    const all = [];
+    snap.forEach(docSnap => all.push(docSnap.data()));
+    let html = `<div style="font-size:13px;font-weight:700;margin-bottom:8px;">סה"כ נרשמו: ${all.length}</div>`;
+    html += '<div style="max-height:260px;overflow-y:auto;border:1px solid #eee;border-radius:8px;">';
+    all.forEach((v, i) => {
+      const d = v.createdAt && v.createdAt.toDate ? v.createdAt.toDate().toLocaleDateString('he-IL') : '';
+      html += `<div style="padding:8px 10px;border-bottom:1px solid #f0f0f0;font-size:12.5px;">
+        <b>${i + 1}. ${(v.name || '').replace(/</g,'&lt;')}</b> — ${(v.phone || '').replace(/</g,'&lt;')} — ${(v.email || '').replace(/</g,'&lt;')}
+        <div style="font-size:10.5px;color:#999;">${d}</div>
+      </div>`;
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<p style="font-size:12px;color:#a33;">שגיאה בטעינת הרשימה</p>';
+  }
 };
 </script>
 </body>

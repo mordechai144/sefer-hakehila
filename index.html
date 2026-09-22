@@ -490,6 +490,23 @@
     z-index: 5;
     padding: 4px;
   }
+  .new-content-dot {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #e0433f;
+    border: 2px solid rgba(255,255,255,0.85);
+    box-shadow: 0 0 6px rgba(224,67,63,0.7);
+    animation: newDotPulse 1.6s ease-in-out infinite;
+    z-index: 5;
+  }
+  @keyframes newDotPulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.25); opacity: 0.75; }
+  }
   .hero-tile-icon {
     font-size: 34px;
     margin-bottom: 8px;
@@ -1265,6 +1282,7 @@ function renderHome(container) {
           </div>
     <div class="hero-tile" onclick="openCommunityBoard()">
       <div class="admin-corner" onclick="event.stopPropagation(); communityForceAdmin=true; openCommunityBoard();">&#128273;</div>
+      <div class="new-content-dot" id="newContentDot" style="display:none;"></div>
       <div class="hero-tile-icon">&#128247;</div>
       <div class="hero-tile-title">אין דער מאקאווא וועלד</div>
       <div class="hero-tile-sub">תמונות מהקהילה</div>
@@ -1677,7 +1695,7 @@ setTimeout(() => {
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
-import { getFirestore, collection, addDoc, getDocs, query, orderBy, Timestamp, updateDoc, arrayUnion, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { getFirestore, collection, addDoc, getDocs, query, orderBy, Timestamp, updateDoc, arrayUnion, doc, deleteDoc, limit } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -1706,6 +1724,41 @@ onAuthStateChanged(auth, (user) => {
 });
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+async function checkForNewCommunityContent() {
+  try {
+    const q = query(collection(db, 'community_posts'), orderBy('createdAt', 'desc'), limit(1));
+    const snap = await getDocs(q);
+    if (snap.empty) return;
+    const latest = snap.docs[0].data();
+    const latestTime = latest.createdAt && latest.createdAt.toDate ? latest.createdAt.toDate().getTime() : 0;
+    const lastSeen = parseInt(localStorage.getItem('lastSeenNewsAt') || '0', 10);
+    const dot = document.getElementById('newContentDot');
+    if (latestTime > lastSeen) {
+      if (dot) dot.style.display = 'block';
+      if ('setAppBadge' in navigator) {
+        try { navigator.setAppBadge(1); } catch (e) {}
+      }
+    } else {
+      if (dot) dot.style.display = 'none';
+      if ('clearAppBadge' in navigator) {
+        try { navigator.clearAppBadge(); } catch (e) {}
+      }
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function markCommunityNewsSeen() {
+  localStorage.setItem('lastSeenNewsAt', String(Date.now()));
+  const dot = document.getElementById('newContentDot');
+  if (dot) dot.style.display = 'none';
+  if ('clearAppBadge' in navigator) {
+    try { navigator.clearAppBadge(); } catch (e) {}
+  }
+}
+
+setTimeout(checkForNewCommunityContent, 2000);
+
 let communityPostsCache = [];
 
 function formatCaptionText(text) {
@@ -1752,6 +1805,7 @@ window.openCommunityBoard = async function() {
   `;
   document.getElementById('formOverlay').classList.add('show');
   await communityLoadPosts();
+  markCommunityNewsSeen();
 };
 
 let communityLoadFailed = false;

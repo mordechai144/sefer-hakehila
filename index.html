@@ -495,16 +495,24 @@
   }
   .new-content-dot {
     position: absolute;
-    top: 10px;
-    right: 14px;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: #e0433f;
-    border: 2px solid rgba(255,255,255,0.85);
-    box-shadow: 0 0 6px rgba(224,67,63,0.7);
+    top: 8px;
+    right: 12px;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    border-radius: 10px;
+    background: #25D366;
+    border: 2px solid rgba(255,255,255,0.9);
+    box-shadow: 0 0 6px rgba(37,211,102,0.6);
     animation: newDotPulse 1.6s ease-in-out infinite;
     z-index: 5;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
   }
   @keyframes newDotPulse {
     0%, 100% { transform: scale(1); opacity: 1; }
@@ -1730,17 +1738,20 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 async function checkForNewCommunityContent() {
   try {
-    const q = query(collection(db, 'community_posts'), orderBy('createdAt', 'desc'), limit(1));
+    const q = query(collection(db, 'community_posts'), orderBy('createdAt', 'desc'), limit(20));
     const snap = await getDocs(q);
-    if (snap.empty) return;
-    const latest = snap.docs[0].data();
-    const latestTime = latest.createdAt && latest.createdAt.toDate ? latest.createdAt.toDate().getTime() : 0;
     const lastSeen = parseInt(localStorage.getItem('lastSeenNewsAt') || '0', 10);
+    let newCount = 0;
+    snap.forEach(docSnap => {
+      const data = docSnap.data();
+      const t = data.createdAt && data.createdAt.toDate ? data.createdAt.toDate().getTime() : 0;
+      if (t > lastSeen) newCount++;
+    });
     const dot = document.getElementById('newContentDot');
-    if (latestTime > lastSeen) {
-      if (dot) dot.style.display = 'block';
+    if (newCount > 0) {
+      if (dot) { dot.textContent = newCount > 99 ? '99+' : String(newCount); dot.style.display = 'flex'; }
       if ('setAppBadge' in navigator) {
-        try { navigator.setAppBadge(1); } catch (e) {}
+        try { navigator.setAppBadge(newCount); } catch (e) {}
       }
     } else {
       if (dot) dot.style.display = 'none';

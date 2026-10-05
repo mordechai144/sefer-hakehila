@@ -1760,16 +1760,44 @@ onAuthStateChanged(auth, (user) => {
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Server-based clock: protects against wrong date/time on the user's device
+let serverSkewMs = null;
+async function getServerNow() {
+  if (serverSkewMs === null) {
+    serverSkewMs = 0;
+    try {
+      const resp = await fetch(location.href.split('#')[0], { method: 'HEAD', cache: 'no-store' });
+      const h = resp.headers.get('Date');
+      const t = h ? Date.parse(h) : NaN;
+      if (!isNaN(t)) serverSkewMs = t - Date.now();
+    } catch (e) { /* fall back to device clock */ }
+  }
+  return Date.now() + serverSkewMs;
+}
+
+// Tolerant reading of a post's date (Timestamp, {seconds}, number or string)
+function postTimeMs(data) {
+  const c = data && data.createdAt;
+  if (!c) return null;
+  try {
+    if (typeof c.toDate === 'function') return c.toDate().getTime();
+    if (typeof c.seconds === 'number') return c.seconds * 1000;
+    if (typeof c === 'number') return c;
+    const p = Date.parse(c);
+    return isNaN(p) ? null : p;
+  } catch (e) { return null; }
+}
+
 async function checkForNewCommunityContent() {
   try {
-    const q = query(collection(db, 'community_posts'), orderBy('createdAt', 'desc'), limit(20));
-    const snap = await getDocs(q);
+    const snap = await getDocs(collection(db, 'community_posts'));
+    const now = await getServerNow();
     const lastSeen = parseInt(localStorage.getItem('lastSeenNewsAt') || '0', 10);
     let newCount = 0;
     snap.forEach(docSnap => {
-      const data = docSnap.data();
-      const t = data.createdAt && data.createdAt.toDate ? data.createdAt.toDate().getTime() : 0;
-      if (t > lastSeen) newCount++;
+      const t = postTimeMs(docSnap.data());
+      if (t === null) return;
+      if (now - t <= SEVEN_DAYS_MS && t > lastSeen) newCount++;
     });
     const dot = document.getElementById('newContentDot');
     if (newCount > 0) {
@@ -1787,7 +1815,12 @@ async function checkForNewCommunityContent() {
 }
 
 function markCommunityNewsSeen() {
-  localStorage.setItem('lastSeenNewsAt', String(Date.now()));
+  // remember the newest post the user has now seen (no dependence on device clock)
+  let latest = parseInt(localStorage.getItem('lastSeenNewsAt') || '0', 10);
+  communityPostsCache.forEach(p => {
+    if (p._created && p._created > latest && !p._noDate) latest = p._created;
+  });
+  localStorage.setItem('lastSeenNewsAt', String(latest));
   const dot = document.getElementById('newContentDot');
   if (dot) dot.style.display = 'none';
   if ('clearAppBadge' in navigator) {
@@ -1822,10 +1855,51 @@ window.wrapCaptionSelection = function(textareaId, marker) {
   ta.selectionEnd = start + marker.length + selected.length;
 };
 
+function hebNum(n) {
+  const ones = ['', 'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט'];
+  const tens = ['', 'י', 'כ', 'ל', 'מ', 'נ', 'ס', 'ע', 'פ', 'צ'];
+  const hundreds = ['', 'ק', 'ר', 'ש', 'ת'];
+  let s = '';
+  while (n >= 400) { s += 'ת'; n -= 400; }
+  if (n >= 100) { s += hundreds[Math.floor(n / 100)]; n %= 100; }
+  if (n === 15) { s += 'טו'; n = 0; }
+  else if (n === 16) { s += 'טז'; n = 0; }
+  else { s += tens[Math.floor(n / 10)]; n %= 10; s += ones[n]; }
+  if (s.length === 1) return s + '׳';
+  return s.slice(0, -1) + '״' + s.slice(-1);
+}
+
+function hebrewDateStr(d) {
+  try {
+    const parts = new Intl.DateTimeFormat('he-IL-u-ca-hebrew', { day: 'numeric', month: 'long', year: 'numeric' }).formatToParts(d);
+    let day, month, year;
+    parts.forEach(p => {
+      if (p.type === 'day') day = parseInt(p.value, 10);
+      else if (p.type === 'month') month = p.value;
+      else if (p.type === 'year') year = parseInt(p.value, 10);
+    });
+    if (!day || !month || !year) return '';
+    return hebNum(day) + ' ב' + month + ' ' + hebNum(year % 1000);
+  } catch (e) { return ''; }
+}
+
 function communityFormatDate(ts) {
   try {
     const d = ts.toDate ? ts.toDate() : new Date(ts);
-    return d.toLocaleDateString('he-IL');
+    const heb = hebrewDateStr(d);
+    const greg = d.toLocaleDateString('he-IL');
+    return heb ? `${heb} • ${greg}` : greg;
+  } catch (e) { return ''; }
+}
+
+function communityPostDateLine(post) {
+  try {
+    if (!post || post._noDate || !post._created) return '';
+    const d = new Date(post._created);
+    const heb = hebrewDateStr(d);
+    const greg = d.toLocaleDateString('he-IL');
+    const time = d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+    return [heb, greg, time].filter(Boolean).join(' • ');
   } catch (e) { return ''; }
 }
 
@@ -1852,22 +1926,27 @@ let communityDebugInfo = '';
 
 async function communityLoadPosts(isRetry) {
   try {
-    const q = query(collection(db, 'community_posts'), orderBy('createdAt', 'desc'));
-    const snap = await getDocs(q);
-    const now = Date.now();
+    const snap = await getDocs(collection(db, 'community_posts'));
+    const now = await getServerNow();
     communityPostsCache = [];
     let totalDocs = 0, noCreatedAt = 0, tooOld = 0;
     snap.forEach(docSnap => {
       totalDocs++;
       const data = docSnap.data();
-      if (!data.createdAt) { noCreatedAt++; return; }
-      const created = data.createdAt.toDate ? data.createdAt.toDate().getTime() : new Date(data.createdAt).getTime();
+      const created = postTimeMs(data);
+      if (created === null) {
+        // never hide a post just because its date is missing/odd
+        noCreatedAt++;
+        communityPostsCache.push({ id: docSnap.id, ...data, _created: now, _noDate: true });
+        return;
+      }
       if (now - created <= SEVEN_DAYS_MS) {
         communityPostsCache.push({ id: docSnap.id, ...data, _created: created });
       } else {
         tooOld++;
       }
     });
+    communityPostsCache.sort((a, b) => b._created - a._created);
     communityLoadFailed = false;
     communityDebugInfo = `סה"כ במסד: ${totalDocs} | בטווח השבוע: ${communityPostsCache.length} | ישנים: ${tooOld} | ללא תאריך: ${noCreatedAt}`;
   } catch (e) {
@@ -1937,11 +2016,9 @@ window.communityRenderBoard = function() {
         <div style="border:1px solid rgba(199,162,74,0.4);border-radius:14px;overflow:hidden;margin-bottom:18px;box-shadow:0 3px 10px rgba(0,0,0,0.08);background:#fff;">
           ${post.image ? `<img src="${post.image}" onclick="openImageViewer(this.src)" style="width:100%;display:block;max-height:420px;object-fit:cover;cursor:zoom-in;">` : ''}
           <div style="padding:14px;">
+            ${communityPostDateLine(post) ? `<div style="font-size:12.5px;font-weight:700;color:var(--navy);background:#fbf3dc;border:1px solid rgba(199,162,74,0.45);border-radius:8px;padding:5px 10px;display:inline-block;margin-bottom:8px;">📅 ${communityPostDateLine(post)}</div>` : ''}
             <div style="font-size:15px;line-height:1.5;">${formatCaptionText(post.caption || '')}</div>
-            <div style="font-size:11.5px;color:#999;margin-top:6px;display:flex;align-items:center;justify-content:space-between;">
-              <span>${communityFormatDate(post.createdAt)}</span>
-              ${isAdmin ? `<button onclick="communityDeletePost('${post.id}')" style="border:none;background:none;color:#a33;font-size:12px;cursor:pointer;">מחק</button>` : ''}
-            </div>
+            ${isAdmin ? `<div style="text-align:left;margin-top:6px;"><button onclick="communityDeletePost('${post.id}')" style="border:none;background:none;color:#a33;font-size:12px;cursor:pointer;">מחק</button></div>` : ''}
           </div>
         </div>
       `;
@@ -1993,12 +2070,13 @@ window.communitySubmitPost = async function() {
   status.textContent = '';
 
   try {
+    const baseMs = await getServerNow();
     if (files.length === 0) {
       btn.textContent = 'מפרסם...';
       await addDoc(collection(db, 'community_posts'), {
         caption: caption,
         image: null,
-        createdAt: Timestamp.now()
+        createdAt: Timestamp.fromMillis(baseMs)
       });
     } else {
       for (let i = 0; i < files.length; i++) {
@@ -2007,7 +2085,7 @@ window.communitySubmitPost = async function() {
         await addDoc(collection(db, 'community_posts'), {
           caption: i === 0 ? caption : '',
           image: imageData,
-          createdAt: Timestamp.now()
+          createdAt: Timestamp.fromMillis(baseMs + i)
         });
       }
     }

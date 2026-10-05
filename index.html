@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- APP_VERSION: 2026-10-05-b -->
 <html lang="he" dir="rtl">
 <head>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1678,6 +1679,24 @@ document.getElementById('detailOverlay').addEventListener('click', e => { if (e.
 document.getElementById('formOverlay').addEventListener('click', e => { if (e.target.id === 'formOverlay') closeAllOverlays(); });
 
 switchTab('home');
+
+// Auto-update: if this device is running an old cached copy, load the newest one
+const APP_VERSION = '2026-10-05-b';
+(async function checkAppVersion() {
+  try {
+    if (sessionStorage.getItem('versionChecked')) return;
+    sessionStorage.setItem('versionChecked', '1');
+    const resp = await fetch(location.pathname, { cache: 'no-store', headers: { Range: 'bytes=0-1023' } });
+    const txt = await resp.text();
+    const m = txt.match(/APP_VERSION:\s*([\w.-]+)/);
+    if (m && m[1] !== APP_VERSION && !sessionStorage.getItem('reloadedForVersion')) {
+      sessionStorage.setItem('reloadedForVersion', m[1]);
+      const u = new URL(location.href);
+      u.searchParams.set('v', m[1]);
+      location.replace(u.toString());
+    }
+  } catch (e) { /* ignore */ }
+})();
 
 let deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {

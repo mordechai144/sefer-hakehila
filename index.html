@@ -962,6 +962,10 @@
     <div id="reg_status" style="font-size:12px;color:#a33;margin-top:8px;height:14px;text-align:center;"></div>
   </div>
 </div>
+<div id="imageViewer" onclick="closeImageViewer()" style="display:none;position:fixed;inset:0;z-index:9990;background:rgba(0,0,0,0.92);align-items:center;justify-content:center;padding:12px;">
+  <button onclick="closeImageViewer()" style="position:absolute;top:14px;left:16px;background:none;border:none;color:#fff;font-size:34px;cursor:pointer;line-height:1;">&times;</button>
+  <img id="imageViewerImg" src="" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;">
+</div>
 <div class="install-banner" id="installBanner">
   <button class="install-banner-close" onclick="dismissInstallBanner()">&times;</button>
   <div class="install-banner-icon">&#11088;</div>
@@ -1083,6 +1087,15 @@ function digitsOnly(phone) {
     return '+1' + p.replace(/-/g, '');
   }
   return p.replace(/[^\d+]/g, '');
+}
+
+function openImageViewer(src) {
+  const v = document.getElementById('imageViewer');
+  document.getElementById('imageViewerImg').src = src;
+  v.style.display = 'flex';
+}
+function closeImageViewer() {
+  document.getElementById('imageViewer').style.display = 'none';
 }
 
 function copyPhoneNumber(number, btnEl) {
@@ -1253,15 +1266,26 @@ function renderInstitutionsList(container, q) {
   list.forEach(inst => {
     const card = document.createElement('div');
     card.className = 'inst-card';
-    let rows = inst.contacts.map(c => `
-      <div class="inst-contact-row">
+    let rows = inst.contacts.map(c => {
+      const detailObj = {
+        id: 'fav-inst',
+        first: c.name || inst.name,
+        last: '',
+        phone: c.phone || '',
+        address: inst.address || '',
+        notes: [c.role, inst.name].filter(Boolean).join(' | ')
+      };
+      const detailArg = JSON.stringify(detailObj).replace(/'/g, '&#39;');
+      return `
+      <div class="inst-contact-row" style="cursor:pointer;" onclick='showDetail(${detailArg})'>
         <div class="inst-contact-info">
           ${c.role ? `<div class="inst-contact-role">${c.role}</div>` : ''}
           <div class="inst-contact-name">${c.name || inst.name}</div>
         </div>
-        ${c.phone ? `<a class="call-btn" href="tel:${digitsOnly(c.phone)}" title="התקשר">&#128222;</a>` : ''}
-        ${c.phone ? `<button class="call-btn" onclick="copyPhoneNumber('${digitsOnly(c.phone)}', this)" title="העתק מספר" style="border:none;cursor:pointer;">&#128203;</button>` : ''}
-      </div>`).join('');
+        ${c.phone ? `<a class="call-btn" href="tel:${digitsOnly(c.phone)}" onclick="event.stopPropagation()" title="התקשר">&#128222;</a>` : ''}
+        ${c.phone ? `<button class="call-btn" onclick="event.stopPropagation(); copyPhoneNumber('${digitsOnly(c.phone)}', this)" title="העתק מספר" style="border:none;cursor:pointer;">&#128203;</button>` : ''}
+      </div>`;
+    }).join('');
     card.innerHTML = `
       <div class="inst-category">${inst.category}</div>
       <div class="inst-name">${inst.name}</div>
@@ -1911,7 +1935,7 @@ window.communityRenderBoard = function() {
     communityPostsCache.forEach(post => {
       html += `
         <div style="border:1px solid rgba(199,162,74,0.4);border-radius:14px;overflow:hidden;margin-bottom:18px;box-shadow:0 3px 10px rgba(0,0,0,0.08);background:#fff;">
-          ${post.image ? `<img src="${post.image}" style="width:100%;display:block;max-height:420px;object-fit:cover;">` : ''}
+          ${post.image ? `<img src="${post.image}" onclick="openImageViewer(this.src)" style="width:100%;display:block;max-height:420px;object-fit:cover;cursor:zoom-in;">` : ''}
           <div style="padding:14px;">
             <div style="font-size:15px;line-height:1.5;">${formatCaptionText(post.caption || '')}</div>
             <div style="font-size:11.5px;color:#999;margin-top:6px;display:flex;align-items:center;justify-content:space-between;">

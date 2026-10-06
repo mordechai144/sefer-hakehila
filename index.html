@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- APP_VERSION: 2026-10-05-b -->
+<!-- APP_VERSION: 2026-10-05-c -->
 <html lang="he" dir="rtl">
 <head>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1681,7 +1681,7 @@ document.getElementById('formOverlay').addEventListener('click', e => { if (e.ta
 switchTab('home');
 
 // Auto-update: if this device is running an old cached copy, load the newest one
-const APP_VERSION = '2026-10-05-b';
+const APP_VERSION = '2026-10-05-c';
 (async function checkAppVersion() {
   try {
     if (sessionStorage.getItem('versionChecked')) return;
@@ -1749,7 +1749,7 @@ setTimeout(() => {
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
-import { getFirestore, collection, addDoc, getDocs, query, orderBy, Timestamp, updateDoc, arrayUnion, doc, deleteDoc, limit } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { getFirestore, initializeFirestore, getDocsFromServer, collection, addDoc, getDocs, query, orderBy, Timestamp, updateDoc, arrayUnion, doc, deleteDoc, limit } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -1761,7 +1761,7 @@ const firebaseConfig = {
   appId: "1:770111085290:web:130af92bdc8a2117205593"
 };
 const fbApp = initializeApp(firebaseConfig);
-const db = getFirestore(fbApp);
+const db = initializeFirestore(fbApp, { experimentalAutoDetectLongPolling: true });
 const auth = getAuth(fbApp);
 
 let isAdmin = false;
@@ -1809,7 +1809,7 @@ function postTimeMs(data) {
 
 async function checkForNewCommunityContent() {
   try {
-    const snap = await getDocs(collection(db, 'community_posts'));
+    const snap = await getDocsFromServer(collection(db, 'community_posts'));
     const now = await getServerNow();
     const lastSeen = parseInt(localStorage.getItem('lastSeenNewsAt') || '0', 10);
     let newCount = 0;
@@ -1943,9 +1943,11 @@ let communityLoadFailed = false;
 
 let communityDebugInfo = '';
 
-async function communityLoadPosts(isRetry) {
+async function communityLoadPosts(attempt) {
+  attempt = (typeof attempt === 'number') ? attempt : 0;
   try {
-    const snap = await getDocs(collection(db, 'community_posts'));
+    // read from the SERVER (never silently fall back to an empty local cache)
+    const snap = await getDocsFromServer(collection(db, 'community_posts'));
     const now = await getServerNow();
     communityPostsCache = [];
     let totalDocs = 0, noCreatedAt = 0, tooOld = 0;
@@ -1969,16 +1971,17 @@ async function communityLoadPosts(isRetry) {
     communityLoadFailed = false;
     communityDebugInfo = `סה"כ במסד: ${totalDocs} | בטווח השבוע: ${communityPostsCache.length} | ישנים: ${tooOld} | ללא תאריך: ${noCreatedAt}`;
   } catch (e) {
-    if (!isRetry) {
-      await new Promise(r => setTimeout(r, 1500));
-      return communityLoadPosts(true);
+    if (attempt < 2) {
+      await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+      return communityLoadPosts(attempt + 1);
     }
     communityLoadFailed = true;
     communityPostsCache = [];
-    communityDebugInfo = 'שגיאה: ' + (e && e.message ? e.message : String(e));
+    communityDebugInfo = 'שגיאה: ' + (e && (e.code || e.message) ? (e.code || '') + ' ' + (e.message || '') : String(e));
   }
   communityRenderBoard();
 }
+window.communityLoadPosts = communityLoadPosts;
 
 window.communityRenderBoard = function() {
   const el = document.getElementById('communityBoard');
@@ -2165,25 +2168,36 @@ window.openQABoard = async function() {
   await qaLoadQuestions();
 };
 
-async function qaLoadQuestions() {
+let qaLoadFailed = false;
+async function qaLoadQuestions(attempt) {
+  attempt = (typeof attempt === 'number') ? attempt : 0;
   try {
     const q = query(collection(db, 'community_qa'), orderBy('createdAt', 'desc'));
-    const snap = await getDocs(q);
+    const snap = await getDocsFromServer(q);
     qaCache = [];
     snap.forEach(docSnap => {
       qaCache.push({ id: docSnap.id, ...docSnap.data() });
     });
+    qaLoadFailed = false;
   } catch (e) {
+    if (attempt < 2) {
+      await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+      return qaLoadQuestions(attempt + 1);
+    }
+    qaLoadFailed = true;
     qaCache = [];
   }
   qaRenderBoard();
 }
+window.qaLoadQuestions = qaLoadQuestions;
 
 function qaRenderBoard() {
   const el = document.getElementById('qaBoard');
   if (!el) return;
   if (qaCache.length === 0) {
-    el.innerHTML = '<p style="font-size:13px;color:#777;text-align:center;">אין עדיין שאלות. היו הראשונים לשאול!</p>';
+    el.innerHTML = qaLoadFailed
+      ? '<div style="text-align:center;padding:16px 10px;"><p style="font-size:13px;color:#a33;margin-bottom:10px;">בעיית תקשורת - לא הצלחנו לטעון את השאלות</p><button class="btn-secondary" onclick="qaLoadQuestions()">נסו שוב</button></div>'
+      : '<p style="font-size:13px;color:#777;text-align:center;">אין עדיין שאלות. היו הראשונים לשאול!</p>';
     return;
   }
   let html = '';

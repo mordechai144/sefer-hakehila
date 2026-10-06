@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- APP_VERSION: 2026-10-05-d -->
+<!-- APP_VERSION: 2026-10-06-f -->
 <html lang="he" dir="rtl">
 <head>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1681,7 +1681,7 @@ document.getElementById('formOverlay').addEventListener('click', e => { if (e.ta
 switchTab('home');
 
 // Auto-update: if this device is running an old cached copy, load the newest one
-const APP_VERSION = '2026-10-05-d';
+const APP_VERSION = '2026-10-06-f';
 (async function checkAppVersion() {
   try {
     if (sessionStorage.getItem('versionChecked')) return;
@@ -1739,9 +1739,22 @@ setTimeout(() => {
 }, 9800);
 
 setTimeout(() => {
-  if (!localStorage.getItem('visitorRegistered')) {
+  const registered = localStorage.getItem('visitorRegistered');
+  const confirmed = localStorage.getItem('registrationConfirmed');
+  const pending = localStorage.getItem('pendingRegistration');
+  const needsFirst = !registered;
+  const needsAgain = registered && !confirmed && !pending;   // registered in the past, never confirmed delivered
+  if (needsFirst || needsAgain) {
     const reg = document.getElementById('registerOverlay');
-    if (reg) reg.classList.add('show');
+    if (reg) {
+      if (needsAgain) {
+        const t = reg.querySelector('.register-title');
+        const s = reg.querySelector('.register-sub');
+        if (t) t.textContent = 'עדכון קטן';
+        if (s) s.textContent = 'שדרגנו את מערכת ההרשמה. נשמח שתמלאו שוב את הפרטים (פעם אחת בלבד)';
+      }
+      reg.classList.add('show');
+    }
   }
 }, 27800);
 
@@ -1749,7 +1762,7 @@ setTimeout(() => {
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
-import { getFirestore, initializeFirestore, getDocsFromServer, collection, addDoc, getDocs, query, orderBy, Timestamp, updateDoc, arrayUnion, doc, deleteDoc, limit } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { getFirestore, initializeFirestore, getDocsFromServer, setDoc, collection, addDoc, getDocs, query, orderBy, Timestamp, updateDoc, arrayUnion, doc, deleteDoc, limit } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -2372,6 +2385,62 @@ window.qaAnswerQuestion = async function(questionId) {
   }
 };
 
+// ---- Reliable registration: never lose a registrant, even if Google is blocked ----
+let flushingRegistration = false;
+
+async function deliverRegistration(rec) {
+  // 1) Firestore (fixed document id => retries never create duplicates)
+  try {
+    await Promise.race([
+      setDoc(doc(db, 'community_visitors', rec.id), {
+        name: rec.name,
+        phone: rec.phone,
+        email: rec.email,
+        createdAt: Timestamp.fromMillis(rec.ts)
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 12000))
+    ]);
+    return true;
+  } catch (e) {
+    // the record already exists (an earlier attempt got through) => treat as delivered
+    if (e && e.code === 'permission-denied') return true;
+  }
+  // 2) Backup channel: email via Formspree
+  try {
+    const resp = await fetch('https://formspree.io/f/mrpgrypy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({
+        subject: 'נרשם חדש לאפליקציה - ספר הקהילה',
+        name: rec.name,
+        phone: rec.phone,
+        email: rec.email,
+        message: 'נרשם חדש:\nשם: ' + rec.name + '\nטלפון: ' + rec.phone + '\nאימייל: ' + rec.email
+      })
+    });
+    if (resp.ok) return true;
+  } catch (e) { /* ignore */ }
+  return false;
+}
+
+async function flushPendingRegistration() {
+  if (flushingRegistration) return;
+  let rec = null;
+  try { rec = JSON.parse(localStorage.getItem('pendingRegistration') || 'null'); } catch (e) { rec = null; }
+  if (!rec) return;
+  flushingRegistration = true;
+  try {
+    const ok = await deliverRegistration(rec);
+    if (ok) {
+      localStorage.removeItem('pendingRegistration');
+      localStorage.setItem('registrationConfirmed', '1');
+    }
+  } finally {
+    flushingRegistration = false;
+  }
+}
+window.flushPendingRegistration = flushPendingRegistration;
+
 window.submitRegistration = function() {
   const name = document.getElementById('reg_name').value.trim();
   const phone = document.getElementById('reg_phone').value.trim();
@@ -2381,16 +2450,40 @@ window.submitRegistration = function() {
     status.textContent = 'נא למלא את כל השדות';
     return;
   }
+  const rec = {
+    id: 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    name: name, phone: phone, email: email, ts: Date.now()
+  };
+  // keep it on the device until it has really been delivered
+  localStorage.setItem('pendingRegistration', JSON.stringify(rec));
   localStorage.setItem('visitorRegistered', '1');
   document.getElementById('registerOverlay').classList.remove('show');
-
-  addDoc(collection(db, 'community_visitors'), {
-    name: name,
-    phone: phone,
-    email: email,
-    createdAt: Timestamp.now()
-  }).catch(() => {});
+  flushPendingRegistration();
 };
+
+// every time the app opens: finish delivering any registration that did not get through
+setTimeout(flushPendingRegistration, 4000);
+
+function visitorKey(v) {
+  const digits = String((v && v.phone) || '').replace(/\D/g, '');
+  if (digits.length >= 7) return 'p' + digits.slice(-9);
+  const mail = String((v && v.email) || '').trim().toLowerCase();
+  if (mail) return 'e' + mail;
+  return 'n' + String((v && v.name) || '').trim();
+}
+function visitorTime(v) {
+  return v && v.createdAt && v.createdAt.toDate ? v.createdAt.toDate().getTime() : 0;
+}
+// one entry per person (newest wins), so re-registrations do not inflate the list
+function dedupeVisitors(list) {
+  const seen = new Set();
+  const out = [];
+  list.slice().sort((a, b) => visitorTime(b) - visitorTime(a)).forEach(v => {
+    const k = visitorKey(v);
+    if (!seen.has(k)) { seen.add(k); out.push(v); }
+  });
+  return out;
+}
 
 window.loadNewVisitorsAndMarkSeen = async function() {
   const el = document.getElementById('newVisitorsPanel');
@@ -2401,10 +2494,9 @@ window.loadNewVisitorsAndMarkSeen = async function() {
     const snap = await getDocs(q);
     const all = [];
     snap.forEach(docSnap => all.push(docSnap.data()));
-    const newOnes = all.filter(v => {
-      const t = v.createdAt && v.createdAt.toDate ? v.createdAt.toDate().getTime() : 0;
-      return t > lastSeen;
-    });
+    const knownKeys = new Set(all.filter(v => visitorTime(v) <= lastSeen).map(visitorKey));
+    const newOnes = dedupeVisitors(all.filter(v => visitorTime(v) > lastSeen))
+      .filter(v => !knownKeys.has(visitorKey(v)));
     if (newOnes.length === 0) {
       el.innerHTML = '';
     } else {
@@ -2429,8 +2521,9 @@ window.loadAndShowVisitors = async function() {
   try {
     const q = query(collection(db, 'community_visitors'), orderBy('createdAt', 'desc'));
     const snap = await getDocs(q);
-    const all = [];
-    snap.forEach(docSnap => all.push(docSnap.data()));
+    const raw = [];
+    snap.forEach(docSnap => raw.push(docSnap.data()));
+    const all = dedupeVisitors(raw);
     let html = `<div style="font-size:13px;font-weight:700;margin-bottom:8px;">סה"כ נרשמו: ${all.length}</div>`;
     html += '<div style="max-height:260px;overflow-y:auto;border:1px solid #eee;border-radius:8px;">';
     all.forEach((v, i) => {

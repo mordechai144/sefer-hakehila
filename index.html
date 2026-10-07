@@ -2090,7 +2090,7 @@ async function ghReadNewsFile(token) {
 
 // read → change → write, with a retry if someone else saved at the same moment
 async function ghUpdateNews(token, change, message) {
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 6; attempt++) {
     const cur = await ghReadNewsFile(token);
     const now = await getServerNow();
     const posts = change(cur.posts, now)
@@ -2105,7 +2105,7 @@ async function ghUpdateNews(token, change, message) {
       body: JSON.stringify(body)
     });
     if (put.ok) return posts;
-    if (put.status === 409 || put.status === 422) { await new Promise(r => setTimeout(r, 1200)); continue; }
+    if (put.status === 409 || put.status === 422) { await new Promise(r => setTimeout(r, 1500 * (attempt + 1))); continue; }
     throw new Error(ghErrorText(put.status));
   }
   throw new Error('השמירה נכשלה, נסו שוב בעוד רגע');
@@ -2231,7 +2231,18 @@ function setGhStatus(txt) {
   if (el) el.textContent = txt;
 }
 
+let syncRunning = null, syncAgain = false;
 async function syncNewsFile(showAlert) {
+  if (syncRunning && !showAlert) { syncAgain = true; return syncRunning; }
+  if (syncRunning) await syncRunning.catch(() => {});
+  syncRunning = syncNewsFileOnce(showAlert);
+  try { return await syncRunning; }
+  finally {
+    syncRunning = null;
+    if (syncAgain) { syncAgain = false; syncNewsFile(false); }
+  }
+}
+async function syncNewsFileOnce(showAlert) {
   const token = localStorage.getItem('ghToken');
   if (!token) return false;
   try {

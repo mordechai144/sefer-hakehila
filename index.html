@@ -1979,6 +1979,8 @@ async function getPostTimes() {
     const snap = await getDocsFromServer(collection(db, 'community_posts'));
     const times = [];
     snap.forEach(d => { const t = postTimeMs(d.data()); if (t !== null) times.push(t); });
+    const ghExtra = await loadGhOnlyPosts();
+    ghExtra.forEach(p => times.push(p.createdMs));
     return times;
   } catch (e) {
     const r = await fetch('news.json?t=' + Date.now(), { cache: 'no-store' });
@@ -1986,6 +1988,97 @@ async function getPostTimes() {
     const j = await r.json();
     return (j.posts || []).map(p => p.createdMs);
   }
+}
+
+// ---- Direct publishing to the GitHub backup (for editors whose network blocks Google's server) ----
+const GH_BASE = 'https://api.github.com/repos/mordechai144/sefer-hakehila/contents/';
+let fsReachable = null; // null = unknown, true/false after a check
+
+function withTimeout(promise, ms) {
+  return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+}
+
+async function firestoreReachable() {
+  if (fsReachable !== null) return fsReachable;
+  try {
+    await withTimeout(getDocsFromServer(query(collection(db, 'community_posts'), limit(1))), 8000);
+    fsReachable = true;
+  } catch (e) { fsReachable = false; }
+  return fsReachable;
+}
+
+function ghHeaders(token, raw) {
+  return {
+    'Authorization': 'Bearer ' + token,
+    'Accept': raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json'
+  };
+}
+
+function ghErrorText(status) {
+  if (status === 401) return 'המפתח של GitHub לא תקין או שפג תוקפו';
+  if (status === 403 || status === 404) return 'למפתח של GitHub אין הרשאת כתיבה לאתר';
+  return 'שגיאה מ-GitHub (' + status + ')';
+}
+
+async function ghFetch(url, opts) {
+  try { return await fetch(url, opts); }
+  catch (e) { throw new Error('אין חיבור ל-GitHub ברשת הזו'); }
+}
+
+// reads the current news.json straight from GitHub (fresh, no site delay)
+async function ghReadNewsFile(token) {
+  const list = await ghFetch(GH_BASE + '?ref=main&t=' + Date.now(), { headers: ghHeaders(token), cache: 'no-store' });
+  if (!list.ok) throw new Error(ghErrorText(list.status));
+  const files = await list.json();
+  const existing = files.find(f => f.name === 'news.json');
+  if (!existing) return { sha: null, posts: [] };
+  const r = await ghFetch(GH_BASE + 'news.json?ref=main&t=' + Date.now(), { headers: ghHeaders(token, true), cache: 'no-store' });
+  if (!r.ok) throw new Error(ghErrorText(r.status));
+  const j = await r.json();
+  return { sha: existing.sha, posts: j.posts || [] };
+}
+
+// read → change → write, with a retry if someone else saved at the same moment
+async function ghUpdateNews(token, change, message) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const cur = await ghReadNewsFile(token);
+    const now = await getServerNow();
+    const posts = change(cur.posts, now)
+      .filter(p => p && typeof p.createdMs === 'number')
+      .sort((a, b) => b.createdMs - a.createdMs);
+    const payload = JSON.stringify({ updatedAt: now, posts: posts });
+    const body = { message: message, content: btoa(unescape(encodeURIComponent(payload))), branch: 'main' };
+    if (cur.sha) body.sha = cur.sha;
+    const put = await ghFetch(GH_BASE + 'news.json', {
+      method: 'PUT',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, ghHeaders(token)),
+      body: JSON.stringify(body)
+    });
+    if (put.ok) return posts;
+    if (put.status === 409 || put.status === 422) { await new Promise(r => setTimeout(r, 1200)); continue; }
+    throw new Error(ghErrorText(put.status));
+  }
+  throw new Error('השמירה נכשלה, נסו שוב בעוד רגע');
+}
+
+function isGhPost(id) { return String(id || '').startsWith('gh_'); }
+
+function setCacheFromFilePosts(posts, now) {
+  communityPostsCache = posts
+    .filter(p => now - p.createdMs <= SEVEN_DAYS_MS)
+    .map(p => ({ id: p.id, caption: p.caption || '', image: p.image || null, _created: p.createdMs }));
+  communityPostsCache.sort((a, b) => b._created - a._created);
+  communityLoadFailed = false;
+}
+
+// posts that were published directly to the backup file (by an editor on a blocked network)
+async function loadGhOnlyPosts() {
+  try {
+    const r = await withTimeout(fetch('news.json?t=' + Date.now(), { cache: 'no-store' }), 10000);
+    if (!r.ok) return [];
+    const j = await r.json();
+    return (j.posts || []).filter(p => isGhPost(p.id));
+  } catch (e) { return []; }
 }
 
 window.setGithubToken = function() {
@@ -2009,40 +2102,35 @@ async function syncNewsFile(showAlert) {
   if (!token) return false;
   try {
     setGhStatus('מסנכרן גיבוי...');
-    const snap = await getDocsFromServer(collection(db, 'community_posts'));
-    const now = await getServerNow();
-    const posts = [];
-    snap.forEach(d => {
-      const data = d.data();
-      const t = postTimeMs(data);
-      if (t !== null && now - t <= SEVEN_DAYS_MS) {
-        posts.push({ id: d.id, caption: data.caption || '', image: data.image || null, createdMs: t });
-      }
-    });
-    posts.sort((a, b) => b.createdMs - a.createdMs);
-    const payload = JSON.stringify({ updatedAt: now, posts: posts });
-    const b64 = btoa(unescape(encodeURIComponent(payload)));
+    let fsPosts = null;
+    if (await firestoreReachable()) {
+      try {
+        const snap = await withTimeout(getDocsFromServer(collection(db, 'community_posts')), 15000);
+        const now = await getServerNow();
+        fsPosts = [];
+        snap.forEach(d => {
+          const data = d.data();
+          const t = postTimeMs(data);
+          if (t !== null && now - t <= SEVEN_DAYS_MS) {
+            fsPosts.push({ id: d.id, caption: data.caption || '', image: data.image || null, createdMs: t });
+          }
+        });
+      } catch (e) { fsReachable = false; fsPosts = null; }
+    }
 
-    const base = 'https://api.github.com/repos/mordechai144/sefer-hakehila/contents/';
-    const headers = { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' };
+    if (fsPosts === null) {
+      // Google's server is blocked on this network: only check that GitHub works
+      await ghReadNewsFile(token);
+      setGhStatus('מוכן ✓ (ברשת הזו פרסומים נשמרים ישירות בגיבוי)');
+      if (showAlert) alert('המפתח תקין ✓\n\nברשת הזו השרת של גוגל חסום, ולכן כל פרסום ומחיקה יישמרו ישירות בגיבוי ויגיעו לכולם תוך דקה-שתיים.');
+      return true;
+    }
 
-    // current sha of news.json (directory listing works for files of any size)
-    let sha = null;
-    const list = await fetch(base + '?ref=main&t=' + Date.now(), { headers: headers, cache: 'no-store' });
-    if (!list.ok) throw new Error('בדיקת קבצים נכשלה (' + list.status + ')');
-    const files = await list.json();
-    const existing = files.find(f => f.name === 'news.json');
-    if (existing) sha = existing.sha;
-
-    const body = { message: 'update news backup', content: b64, branch: 'main' };
-    if (sha) body.sha = sha;
-    const put = await fetch(base + 'news.json', {
-      method: 'PUT',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
-      body: JSON.stringify(body)
-    });
-    if (!put.ok) throw new Error('שמירה נכשלה (' + put.status + ')');
-    setGhStatus('מסונכרן ✓ (' + posts.length + ' פוסטים)');
+    const saved = await ghUpdateNews(token, (old, now) => {
+      const ghOnly = old.filter(p => isGhPost(p.id) && now - p.createdMs <= SEVEN_DAYS_MS);
+      return fsPosts.concat(ghOnly);
+    }, 'update news backup');
+    setGhStatus('מסונכרן ✓ (' + saved.length + ' פוסטים)');
     if (showAlert) alert('הגיבוי עודכן בהצלחה');
     return true;
   } catch (e) {
@@ -2077,6 +2165,13 @@ async function communityLoadPosts(attempt) {
         tooOld++;
       }
     });
+    fsReachable = true;
+    const ghExtra = await loadGhOnlyPosts();
+    ghExtra.forEach(p => {
+      if (now - p.createdMs <= SEVEN_DAYS_MS && !communityPostsCache.some(x => x.id === p.id)) {
+        communityPostsCache.push({ id: p.id, caption: p.caption || '', image: p.image || null, _created: p.createdMs });
+      }
+    });
     communityPostsCache.sort((a, b) => b._created - a._created);
     communityLoadFailed = false;
     communityDebugInfo = `סה"כ במסד: ${totalDocs} | בטווח השבוע: ${communityPostsCache.length} | ישנים: ${tooOld} | ללא תאריך: ${noCreatedAt}`;
@@ -2085,6 +2180,7 @@ async function communityLoadPosts(attempt) {
       await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
       return communityLoadPosts(attempt + 1);
     }
+    fsReachable = false;
     let recovered = false;
     try { recovered = await loadNewsFromFile(); } catch (e2) { recovered = false; }
     if (!recovered) {
@@ -2171,6 +2267,22 @@ window.communityRenderBoard = function() {
 
 window.communityDeletePost = async function(postId) {
   if (!confirm('למחוק את הפוסט הזה לצמיתות?')) return;
+  if (isGhPost(postId)) {
+    const token = localStorage.getItem('ghToken');
+    if (!token) { alert('כדי למחוק את הפוסט הזה צריך קודם ללחוץ על "הגדרת מפתח"'); return; }
+    try {
+      const saved = await ghUpdateNews(token, old => old.filter(p => p.id !== postId), 'delete news post');
+      setCacheFromFilePosts(saved, await getServerNow());
+      communityRenderBoard();
+    } catch (e) {
+      alert('המחיקה נכשלה: ' + (e && e.message ? e.message : e));
+    }
+    return;
+  }
+  if (!(await firestoreReachable())) {
+    alert('ברשת הזו השרת של גוגל חסום, ולכן אפשר למחוק מכאן רק פוסטים שפורסמו מרשת חסומה. את הפוסט הזה יש למחוק ממכשיר שבו השרת פתוח.');
+    return;
+  }
   try {
     await deleteDoc(doc(db, 'community_posts', postId));
     await communityLoadPosts();
@@ -2210,6 +2322,41 @@ window.communitySubmitPost = async function() {
 
   btn.disabled = true;
   status.textContent = '';
+
+  btn.textContent = 'בודק חיבור...';
+  if (!(await firestoreReachable())) {
+    // Google's server is blocked here: publish straight to the backup file
+    const token = localStorage.getItem('ghToken');
+    if (!token) {
+      status.textContent = 'ברשת הזו השרת חסום. לחצו על "הגדרת מפתח" למטה ואז פרסמו שוב';
+      btn.disabled = false; btn.textContent = 'פרסום';
+      return;
+    }
+    try {
+      const baseMs = await getServerNow();
+      const newPosts = [];
+      if (files.length === 0) {
+        newPosts.push({ id: 'gh_' + baseMs + '_0', caption: caption, image: null, createdMs: baseMs });
+      } else {
+        for (let i = 0; i < files.length; i++) {
+          btn.textContent = `מכין תמונות... (${i + 1}/${files.length})`;
+          const imageData = await communityCompressImage(files[i]);
+          newPosts.push({ id: 'gh_' + baseMs + '_' + i, caption: i === 0 ? caption : '', image: imageData, createdMs: baseMs + i });
+        }
+      }
+      btn.textContent = 'מפרסם...';
+      const saved = await ghUpdateNews(token, (old, now) =>
+        old.filter(p => now - p.createdMs <= SEVEN_DAYS_MS).concat(newPosts), 'news post');
+      setCacheFromFilePosts(saved, await getServerNow());
+      communityRenderBoard();
+      const st = document.getElementById('c_post_status');
+      if (st) st.textContent = 'פורסם ✓ יופיע אצל כולם תוך דקה-שתיים';
+    } catch (e) {
+      status.textContent = 'הפרסום נכשל: ' + (e && e.message ? e.message : e);
+      btn.disabled = false; btn.textContent = 'פרסום';
+    }
+    return;
+  }
 
   try {
     const baseMs = await getServerNow();

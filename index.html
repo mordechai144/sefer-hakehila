@@ -1090,11 +1090,59 @@ function digitsOnly(phone) {
   return p.replace(/[^\d+]/g, '');
 }
 
-function openImageViewer(src) {
+let ivList = [], ivIdx = 0;
+function ivEnsureControls() {
   const v = document.getElementById('imageViewer');
-  document.getElementById('imageViewerImg').src = src;
-  v.style.display = 'flex';
+  if (v.dataset.ready) return;
+  v.dataset.ready = '1';
+  const mk = (html, css, fn) => {
+    const b = document.createElement('button');
+    b.innerHTML = html;
+    b.style.cssText = css;
+    b.onclick = (e) => { e.stopPropagation(); fn(); };
+    v.appendChild(b);
+    return b;
+  };
+  const arrow = 'position:absolute;top:50%;transform:translateY(-50%);background:rgba(255,255,255,0.18);border:none;color:#fff;font-size:30px;width:46px;height:46px;border-radius:50%;cursor:pointer;line-height:1;';
+  mk('&#8250;', arrow + 'right:10px;', () => ivStep(-1)).id = 'ivPrev';
+  mk('&#8249;', arrow + 'left:10px;', () => ivStep(1)).id = 'ivNext';
+  const c = document.createElement('div');
+  c.id = 'ivCount';
+  c.style.cssText = 'position:absolute;bottom:18px;left:0;right:0;text-align:center;color:#fff;font-size:14px;';
+  v.appendChild(c);
+  document.getElementById('imageViewerImg').onclick = (e) => e.stopPropagation();
+  let sx = null;
+  v.addEventListener('touchstart', (e) => { sx = e.touches[0].clientX; }, { passive: true });
+  v.addEventListener('touchend', (e) => {
+    if (sx === null) return;
+    const dx = e.changedTouches[0].clientX - sx;
+    sx = null;
+    if (Math.abs(dx) > 50) ivStep(dx > 0 ? 1 : -1);
+  });
 }
+function ivShow() {
+  document.getElementById('imageViewerImg').src = ivList[ivIdx];
+  const many = ivList.length > 1;
+  ['ivPrev', 'ivNext', 'ivCount'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = many ? '' : 'none';
+  });
+  const c = document.getElementById('ivCount');
+  if (c) c.textContent = (ivIdx + 1) + ' / ' + ivList.length;
+}
+function ivStep(d) {
+  if (ivList.length < 2) return;
+  ivIdx = (ivIdx + d + ivList.length) % ivList.length;
+  ivShow();
+}
+function openImageViewer(src, list, idx) {
+  ivEnsureControls();
+  ivList = (list && list.length) ? list : [src];
+  ivIdx = (typeof idx === 'number') ? idx : 0;
+  ivShow();
+  document.getElementById('imageViewer').style.display = 'flex';
+}
+window.openImageViewer = openImageViewer;
 function closeImageViewer() {
   document.getElementById('imageViewer').style.display = 'none';
 }
@@ -1596,6 +1644,8 @@ function render(filter) {
 
 
 function closeAllOverlays() {
+  const av = document.getElementById('albumView');
+  if (av) av.remove();
   document.getElementById('detailOverlay').classList.remove('show');
   document.getElementById('formOverlay').classList.remove('show');
   document.getElementById('formModal').classList.remove('modal-large');
@@ -1967,7 +2017,7 @@ async function loadNewsFromFile() {
   const now = await getServerNow();
   communityPostsCache = (j.posts || [])
     .filter(p => now - p.createdMs <= SEVEN_DAYS_MS)
-    .map(p => ({ id: p.id, caption: p.caption || '', image: p.image || null, _created: p.createdMs }));
+    .map(p => Object.assign({ id: p.id, caption: p.caption || '', image: p.image || null, _created: p.createdMs }, albumFields(p)));
   communityPostsCache.sort((a, b) => b._created - a._created);
   communityLoadFailed = false;
   communityDebugInfo = 'נטען מהגיבוי (news.json): ' + communityPostsCache.length;
@@ -2093,12 +2143,16 @@ async function restListPosts() {
     const j = await r.json();
     (j.documents || []).forEach(d => {
       const f = d.fields || {};
-      out.push({
+      out.push(Object.assign({
         id: d.name.split('/').pop(),
         caption: restFieldValue(f.caption) || '',
         image: restFieldValue(f.image) || null,
         createdMs: restFieldValue(f.createdAt)
-      });
+      }, albumFields({
+        album: restFieldValue(f.album),
+        albumTitle: restFieldValue(f.albumTitle),
+        albumOrder: restFieldValue(f.albumOrder)
+      })));
     });
     if (!j.nextPageToken) break;
     pageToken = j.nextPageToken;
@@ -2106,14 +2160,19 @@ async function restListPosts() {
   return out;
 }
 
-async function restAddPost(caption, image, createdMs) {
-  const body = { fields: {
-    caption: { stringValue: caption || '' },
-    image: image ? { stringValue: image } : { nullValue: null },
-    createdAt: { timestampValue: new Date(createdMs).toISOString() }
-  } };
+async function restAddPost(spec) {
+  const fields = {
+    caption: { stringValue: spec.caption || '' },
+    image: spec.image ? { stringValue: spec.image } : { nullValue: null },
+    createdAt: { timestampValue: new Date(spec.createdMs).toISOString() }
+  };
+  if (spec.album) {
+    fields.album = { stringValue: spec.album };
+    fields.albumTitle = { stringValue: spec.albumTitle || '' };
+    fields.albumOrder = { integerValue: String(spec.albumOrder || 0) };
+  }
   const r = await withTimeout(fetch(FS_REST + 'community_posts?key=' + firebaseConfig.apiKey, {
-    method: 'POST', headers: await restHeaders(true), body: JSON.stringify(body)
+    method: 'POST', headers: await restHeaders(true), body: JSON.stringify({ fields: fields })
   }), 30000);
   if (!r.ok) throw new Error('השמירה נכשלה (' + r.status + ')');
 }
@@ -2125,12 +2184,23 @@ async function restDeletePost(id) {
   if (!r.ok) throw new Error('המחיקה נכשלה (' + r.status + ')');
 }
 
+// extra fields that tie several photos into one article ("כתבה")
+function albumFields(src) {
+  const o = {};
+  if (src && src.album) {
+    o.album = String(src.album);
+    o.albumTitle = src.albumTitle || '';
+    o.albumOrder = typeof src.albumOrder === 'number' ? src.albumOrder : Number(src.albumOrder || 0);
+  }
+  return o;
+}
+
 function isGhPost(id) { return String(id || '').startsWith('gh_'); }
 
 function setCacheFromFilePosts(posts, now) {
   communityPostsCache = posts
     .filter(p => now - p.createdMs <= SEVEN_DAYS_MS)
-    .map(p => ({ id: p.id, caption: p.caption || '', image: p.image || null, _created: p.createdMs }));
+    .map(p => Object.assign({ id: p.id, caption: p.caption || '', image: p.image || null, _created: p.createdMs }, albumFields(p)));
   communityPostsCache.sort((a, b) => b._created - a._created);
   communityLoadFailed = false;
 }
@@ -2176,7 +2246,7 @@ async function syncNewsFile(showAlert) {
           const data = d.data();
           const t = postTimeMs(data);
           if (t !== null && now - t <= SEVEN_DAYS_MS) {
-            fsPosts.push({ id: d.id, caption: data.caption || '', image: data.image || null, createdMs: t });
+            fsPosts.push(Object.assign({ id: d.id, caption: data.caption || '', image: data.image || null, createdMs: t }, albumFields(data)));
           }
         });
       } catch (e) { fsReachable = false; fsPosts = null; }
@@ -2237,7 +2307,7 @@ async function communityLoadPosts(attempt) {
     const ghExtra = await loadGhOnlyPosts();
     ghExtra.forEach(p => {
       if (now - p.createdMs <= SEVEN_DAYS_MS && !communityPostsCache.some(x => x.id === p.id)) {
-        communityPostsCache.push({ id: p.id, caption: p.caption || '', image: p.image || null, _created: p.createdMs });
+        communityPostsCache.push(Object.assign({ id: p.id, caption: p.caption || '', image: p.image || null, _created: p.createdMs }, albumFields(p)));
       }
     });
     communityPostsCache.sort((a, b) => b._created - a._created);
@@ -2272,6 +2342,164 @@ async function communityLoadPosts(attempt) {
 }
 window.communityLoadPosts = communityLoadPosts;
 
+// ===== Articles ("כתבה"): several photos from one event shown as one card =====
+let communityPostMode = 'single';
+let albumFiles = [];
+let albumCoverIdx = 0;
+const albumPreviewUrls = [];
+
+function escAttr(t) {
+  return String(t || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+window.setCommunityPostMode = function(mode) {
+  communityPostMode = mode;
+  communityRenderBoard();
+};
+
+function albumPreviewHtml() {
+  albumPreviewUrls.forEach(u => URL.revokeObjectURL(u));
+  albumPreviewUrls.length = 0;
+  if (!albumFiles.length) return '';
+  let h = '<div style="font-size:12px;color:#777;margin:-4px 0 6px;">' + albumFiles.length + ' תמונות · לחצו על תמונה כדי לבחור אותה כתמונת שער</div>';
+  h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:6px;margin-bottom:10px;">';
+  albumFiles.forEach((f, i) => {
+    const u = URL.createObjectURL(f);
+    albumPreviewUrls.push(u);
+    const cover = i === albumCoverIdx;
+    h += '<div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;cursor:pointer;' + (cover ? 'outline:3px solid var(--gold);' : '') + '" onclick="albumSetCover(' + i + ')">' +
+      '<img src="' + u + '" style="width:100%;height:100%;object-fit:cover;display:block;">' +
+      (cover ? '<span style="position:absolute;bottom:3px;right:3px;background:var(--gold);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:6px;">שער</span>' : '') +
+      '<button onclick="event.stopPropagation();albumRemoveFile(' + i + ')" style="position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;border:none;background:rgba(0,0,0,0.6);color:#fff;font-size:13px;line-height:1;cursor:pointer;">&times;</button>' +
+      '</div>';
+  });
+  return h + '</div>';
+}
+function albumRefreshPreview() {
+  const el = document.getElementById('albumPreview');
+  if (el) el.innerHTML = albumPreviewHtml();
+}
+window.albumAddFiles = function(input) {
+  albumFiles = albumFiles.concat(Array.from(input.files || []));
+  input.value = '';
+  albumRefreshPreview();
+};
+window.albumSetCover = function(i) { albumCoverIdx = i; albumRefreshPreview(); };
+window.albumRemoveFile = function(i) {
+  albumFiles.splice(i, 1);
+  if (albumCoverIdx === i) albumCoverIdx = 0;
+  else if (albumCoverIdx > i) albumCoverIdx--;
+  albumRefreshPreview();
+};
+function albumOrderedFiles() {
+  if (!albumFiles.length) return [];
+  const cover = albumFiles[albumCoverIdx] || albumFiles[0];
+  return [cover].concat(albumFiles.filter(f => f !== cover));
+}
+
+function albumItems(albumId) {
+  return communityPostsCache
+    .filter(p => p.album === albumId)
+    .sort((a, b) => (a.albumOrder || 0) - (b.albumOrder || 0));
+}
+
+function albumCardHtml(albumId) {
+  const items = albumItems(albumId);
+  const head = items[0];
+  const imgs = items.filter(p => p.image);
+  const text = (items.find(p => p.caption) || {}).caption || '';
+  const thumbs = imgs.slice(1, 4);
+  const extra = imgs.length - 4;
+  let grid = '';
+  if (imgs.length) {
+    grid += `<img src="${imgs[0].image}" style="width:100%;display:block;height:230px;object-fit:cover;">`;
+    if (thumbs.length) {
+      grid += `<div style="display:grid;grid-template-columns:repeat(${thumbs.length},1fr);gap:3px;margin-top:3px;">`;
+      thumbs.forEach((p, i) => {
+        const last = i === thumbs.length - 1 && extra > 0;
+        grid += `<div style="position:relative;height:84px;"><img src="${p.image}" style="width:100%;height:100%;object-fit:cover;display:block;">${last ? `<div style="position:absolute;inset:0;background:rgba(23,35,63,0.6);color:#fff;font-size:22px;font-weight:800;display:flex;align-items:center;justify-content:center;">+${extra}</div>` : ''}</div>`;
+      });
+      grid += '</div>';
+    }
+  }
+  return `
+    <div style="border:1px solid rgba(199,162,74,0.55);border-radius:14px;overflow:hidden;margin-bottom:18px;box-shadow:0 3px 10px rgba(0,0,0,0.08);background:#fff;">
+      <div onclick="openCommunityAlbum('${albumId}')" style="cursor:pointer;">
+        ${grid}
+        <div style="padding:14px 14px 6px;">
+          <div style="font-size:11px;font-weight:800;color:var(--gold);letter-spacing:0.5px;margin-bottom:4px;">כתבה · ${imgs.length} תמונות</div>
+          <div style="font-size:18px;font-weight:800;color:var(--navy);line-height:1.35;margin-bottom:6px;">${formatCaptionText(head.albumTitle || '')}</div>
+          ${communityPostDateLine(head) ? `<div style="font-size:12px;color:#8a7a55;margin-bottom:6px;">📅 ${communityPostDateLine(head)}</div>` : ''}
+          ${text ? `<div style="font-size:14.5px;line-height:1.5;color:#444;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">${formatCaptionText(text)}</div>` : ''}
+          <div style="font-size:14px;font-weight:700;color:var(--navy);margin-top:8px;">לכתבה המלאה ←</div>
+        </div>
+      </div>
+      ${isAdmin ? `<div style="text-align:left;padding:0 14px 10px;"><button onclick="communityDeleteAlbum('${albumId}')" style="border:none;background:none;color:#a33;font-size:12px;cursor:pointer;">מחק כתבה</button></div>` : '<div style="height:8px;"></div>'}
+    </div>
+  `;
+}
+
+window.openCommunityAlbum = function(albumId) {
+  const items = albumItems(albumId);
+  if (!items.length) return;
+  const head = items[0];
+  const imgs = items.filter(p => p.image).map(p => p.image);
+  const text = (items.find(p => p.caption) || {}).caption || '';
+  window._albumViewImgs = imgs;
+  let av = document.getElementById('albumView');
+  if (!av) {
+    av = document.createElement('div');
+    av.id = 'albumView';
+    av.style.cssText = 'position:fixed;inset:0;z-index:9980;background:#fff;overflow-y:auto;-webkit-overflow-scrolling:touch;direction:rtl;';
+    document.body.appendChild(av);
+  }
+  av.innerHTML = `
+    <div style="position:sticky;top:0;z-index:2;background:var(--navy);color:#fff;display:flex;align-items:center;gap:10px;padding:12px 14px;padding-top:calc(12px + env(safe-area-inset-top, 0px));">
+      <button onclick="closeAlbumView()" style="background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:15px;font-weight:700;padding:6px 12px;border-radius:8px;cursor:pointer;">→ חזרה</button>
+      <div style="font-size:14px;opacity:0.85;">אין דער מאקאווא וועלד</div>
+    </div>
+    <div style="max-width:640px;margin:0 auto;padding:18px 16px calc(30px + env(safe-area-inset-bottom, 0px));">
+      <div style="font-size:12px;font-weight:800;color:var(--gold);margin-bottom:6px;">כתבה · ${imgs.length} תמונות</div>
+      <h2 style="font-size:24px;font-weight:800;color:var(--navy);line-height:1.3;margin:0 0 8px;">${formatCaptionText(head.albumTitle || '')}</h2>
+      ${communityPostDateLine(head) ? `<div style="font-size:13px;color:#8a7a55;margin-bottom:14px;">📅 ${communityPostDateLine(head)}</div>` : ''}
+      ${text ? `<div style="font-size:16px;line-height:1.7;color:#222;margin-bottom:18px;">${formatCaptionText(text)}</div>` : ''}
+      ${imgs.map((src, i) => `<img src="${src}" onclick="openImageViewer(this.src, window._albumViewImgs, ${i})" style="width:100%;display:block;border-radius:10px;margin-bottom:10px;cursor:zoom-in;">`).join('')}
+      <button onclick="closeAlbumView()" style="width:100%;margin-top:8px;padding:12px;border:none;border-radius:10px;background:var(--navy);color:#fff;font-size:15px;font-weight:700;cursor:pointer;">חזרה לחדשות</button>
+    </div>
+  `;
+  av.scrollTop = 0;
+};
+window.closeAlbumView = function() {
+  const av = document.getElementById('albumView');
+  if (av) av.remove();
+};
+
+window.communityDeleteAlbum = async function(albumId) {
+  if (!confirm('למחוק את כל הכתבה, כולל כל התמונות שבה?')) return;
+  const items = communityPostsCache.filter(p => p.album === albumId);
+  const ghIds = items.filter(p => isGhPost(p.id)).map(p => p.id);
+  const fsIds = items.filter(p => !isGhPost(p.id)).map(p => p.id);
+  try {
+    if (ghIds.length) {
+      const token = localStorage.getItem('ghToken');
+      if (!token) throw new Error('צריך קודם ללחוץ על "הגדרת מפתח"');
+      await ghUpdateNews(token, old => old.filter(p => ghIds.indexOf(p.id) === -1), 'delete news article');
+    }
+    if (fsIds.length) {
+      const live = await firestoreReachable();
+      for (const id of fsIds) {
+        if (live) await deleteDoc(doc(db, 'community_posts', id));
+        else await restDeletePost(id);
+      }
+    }
+    communityPostsCache = communityPostsCache.filter(p => p.album !== albumId);
+    communityRenderBoard();
+    if (fsIds.length && fsReachable) syncNewsFile(false);
+  } catch (e) {
+    alert('המחיקה נכשלה: ' + (e && e.message ? e.message : e));
+  }
+};
+
 window.communityRenderBoard = function() {
   const el = document.getElementById('communityBoard');
   if (!el) return;
@@ -2282,15 +2510,22 @@ window.communityRenderBoard = function() {
       <div style="background:#f7f7f7;border-radius:8px;padding:10px;margin-bottom:14px;">
         <div style="font-size:13px;color:#2a7a2a;margin-bottom:8px;">מחובר כמנהל</div>
         <div id="newVisitorsPanel"></div>
+        <div style="display:flex;gap:6px;margin-bottom:10px;">
+          <button type="button" onclick="setCommunityPostMode('single')" style="flex:1;padding:8px;border-radius:8px;cursor:pointer;font-weight:700;border:1px solid var(--navy);${communityPostMode === 'single' ? 'background:var(--navy);color:#fff;' : 'background:#fff;color:var(--navy);'}">חדשה רגילה</button>
+          <button type="button" onclick="setCommunityPostMode('album')" style="flex:1;padding:8px;border-radius:8px;cursor:pointer;font-weight:700;border:1px solid var(--navy);${communityPostMode === 'album' ? 'background:var(--navy);color:#fff;' : 'background:#fff;color:var(--navy);'}">כתבה עם תמונות</button>
+        </div>
+        ${communityPostMode === 'album' ? '<div class="form-group"><label>כותרת הכתבה</label><input id="c_title" placeholder="למשל: הכנסת ספר תורה בבית המדרש"></div>' : ''}
         <div class="form-group">
-          <label>כיתוב</label>
+          <label>${communityPostMode === 'album' ? 'תוכן הכתבה' : 'כיתוב'}</label>
           <div style="margin-bottom:4px;">
             <button type="button" onclick="wrapCaptionSelection('c_caption','**')" style="font-weight:800;border:1px solid #ccc;border-radius:5px;background:#fff;padding:4px 10px;cursor:pointer;margin-left:6px;">B</button>
             <span style="font-size:11px;color:#999;">סמנו טקסט ולחצו B להדגשה, או כתבו **כך** בעצמכם</span>
           </div>
-          <textarea id="c_caption" rows="2" placeholder="מה קורה בקהילה?"></textarea>
+          <textarea id="c_caption" rows="${communityPostMode === 'album' ? 5 : 2}" placeholder="${communityPostMode === 'album' ? 'ספרו מה היה באירוע...' : 'מה קורה בקהילה?'}"></textarea>
         </div>
-        <div class="form-group"><label>תמונות (אפשר לבחור כמה יחד)</label><input type="file" id="c_file" accept="image/*" multiple></div>
+        ${communityPostMode === 'album'
+          ? '<div class="form-group"><label>תמונות האירוע (אפשר לבחור הרבה יחד)</label><input type="file" id="c_file" accept="image/*" multiple onchange="albumAddFiles(this)"></div><div id="albumPreview">' + albumPreviewHtml() + '</div>'
+          : '<div class="form-group"><label>תמונות (אפשר לבחור כמה יחד)</label><input type="file" id="c_file" accept="image/*" multiple></div>'}
         <div class="form-actions">
           <button class="btn-secondary" onclick="communityLogout()">התנתקות</button>
           <button class="btn-primary" id="c_post_btn" onclick="communitySubmitPost()">פרסום</button>
@@ -2327,7 +2562,14 @@ window.communityRenderBoard = function() {
       : '<p style="font-size:13px;color:#777;text-align:center;">אין עדכונים בשבוע האחרון</p>';
     html += `<p style="font-size:10px;color:#bbb;text-align:center;margin-top:10px;">${communityDebugInfo}</p>`;
   } else {
+    const seenAlbums = {};
     communityPostsCache.forEach(post => {
+      if (post.album) {
+        if (seenAlbums[post.album]) return;
+        seenAlbums[post.album] = true;
+        html += albumCardHtml(post.album);
+        return;
+      }
       html += `
         <div style="border:1px solid rgba(199,162,74,0.4);border-radius:14px;overflow:hidden;margin-bottom:18px;box-shadow:0 3px 10px rgba(0,0,0,0.08);background:#fff;">
           ${post.image ? `<img src="${post.image}" onclick="openImageViewer(this.src)" style="width:100%;display:block;max-height:420px;object-fit:cover;cursor:zoom-in;">` : ''}
@@ -2397,96 +2639,86 @@ window.communityLogout = async function() {
   communityRenderBoard();
 };
 
-window.communitySubmitPost = async function() {
-  const caption = document.getElementById('c_caption').value.trim();
-  const fileInput = document.getElementById('c_file');
-  const files = Array.from(fileInput.files || []);
-  const status = document.getElementById('c_post_status');
-  const btn = document.getElementById('c_post_btn');
-  if (!caption && files.length === 0) { status.textContent = 'נא להוסיף תמונה או כיתוב'; return; }
-
-  btn.disabled = true;
-  status.textContent = '';
-
+// sends ready post specs through whichever route works on this network
+async function publishPostSpecs(specs, btn) {
   btn.textContent = 'בודק חיבור...';
-  if (!(await firestoreReachable())) {
-    // 1) the live connection is blocked: try a plain request to the same server
-    let restErr = null;
-    try {
-      const baseMs = await getServerNow();
-      if (files.length === 0) {
-        btn.textContent = 'מפרסם...';
-        await restAddPost(caption, null, baseMs);
-      } else {
-        for (let i = 0; i < files.length; i++) {
-          btn.textContent = `מפרסם... (${i + 1}/${files.length})`;
-          const imageData = await communityCompressImage(files[i]);
-          await restAddPost(i === 0 ? caption : '', imageData, baseMs + i);
-        }
-      }
-      await communityLoadPosts();
-      const st = document.getElementById('c_post_status');
-      if (st) st.textContent = 'פורסם ✓';
-      return;
-    } catch (e) { restErr = e; }
-
-    // 2) fall back to the GitHub backup file
-    const token = localStorage.getItem('ghToken');
-    if (!token) {
-      status.textContent = 'הפרסום נכשל, השרת חסום ברשת הזו (' + (restErr && restErr.message ? restErr.message : '') + ')';
-      btn.disabled = false; btn.textContent = 'פרסום';
-      return;
-    }
-    try {
-      const baseMs = await getServerNow();
-      const newPosts = [];
-      if (files.length === 0) {
-        newPosts.push({ id: 'gh_' + baseMs + '_0', caption: caption, image: null, createdMs: baseMs });
-      } else {
-        for (let i = 0; i < files.length; i++) {
-          btn.textContent = `מכין תמונות... (${i + 1}/${files.length})`;
-          const imageData = await communityCompressImage(files[i]);
-          newPosts.push({ id: 'gh_' + baseMs + '_' + i, caption: i === 0 ? caption : '', image: imageData, createdMs: baseMs + i });
-        }
-      }
-      btn.textContent = 'מפרסם...';
-      const saved = await ghUpdateNews(token, (old, now) =>
-        old.filter(p => now - p.createdMs <= SEVEN_DAYS_MS).concat(newPosts), 'news post');
-      setCacheFromFilePosts(saved, await getServerNow());
-      communityRenderBoard();
-      const st = document.getElementById('c_post_status');
-      if (st) st.textContent = 'פורסם ✓ יופיע אצל כולם תוך דקה-שתיים';
-    } catch (e) {
-      status.textContent = 'הפרסום נכשל. החיבור לגוגל: ' + (restErr && restErr.message ? restErr.message : 'חסום') + ' | GitHub: ' + (e && e.message ? e.message : e);
-      btn.disabled = false; btn.textContent = 'פרסום';
-    }
-    return;
-  }
-
-  try {
-    const baseMs = await getServerNow();
-    if (files.length === 0) {
-      btn.textContent = 'מפרסם...';
-      await addDoc(collection(db, 'community_posts'), {
-        caption: caption,
-        image: null,
-        createdAt: Timestamp.fromMillis(baseMs)
-      });
-    } else {
-      for (let i = 0; i < files.length; i++) {
-        btn.textContent = `מפרסם... (${i + 1}/${files.length})`;
-        const imageData = await communityCompressImage(files[i]);
-        await addDoc(collection(db, 'community_posts'), {
-          caption: i === 0 ? caption : '',
-          image: imageData,
-          createdAt: Timestamp.fromMillis(baseMs + i)
-        });
-      }
+  if (await firestoreReachable()) {
+    for (let i = 0; i < specs.length; i++) {
+      btn.textContent = specs.length > 1 ? `מפרסם... (${i + 1}/${specs.length})` : 'מפרסם...';
+      const sp = specs[i];
+      await addDoc(collection(db, 'community_posts'), Object.assign({
+        caption: sp.caption || '',
+        image: sp.image || null,
+        createdAt: Timestamp.fromMillis(sp.createdMs)
+      }, albumFields(sp)));
     }
     await communityLoadPosts();
     syncNewsFile(false);
+    return 'פורסם ✓';
+  }
+  // live connection blocked: plain requests to the same server
+  let sent = 0, restErr = null;
+  try {
+    for (let i = 0; i < specs.length; i++) {
+      btn.textContent = specs.length > 1 ? `מפרסם... (${i + 1}/${specs.length})` : 'מפרסם...';
+      await restAddPost(specs[i]);
+      sent++;
+    }
+    await communityLoadPosts();
+    return 'פורסם ✓';
+  } catch (e) { restErr = e; }
+  if (sent > 0) throw new Error('רק ' + sent + ' מתוך ' + specs.length + ' פורסמו (' + restErr.message + ')');
+  // last resort: the GitHub backup file
+  const token = localStorage.getItem('ghToken');
+  if (!token) throw new Error('השרת חסום ברשת הזו (' + (restErr && restErr.message ? restErr.message : '') + ')');
+  btn.textContent = 'מפרסם...';
+  const newPosts = specs.map((sp, i) => Object.assign({ id: 'gh_' + specs[0].createdMs + '_' + i }, sp));
+  let saved;
+  try {
+    saved = await ghUpdateNews(token, (old, now) =>
+      old.filter(p => now - p.createdMs <= SEVEN_DAYS_MS).concat(newPosts), 'news post');
   } catch (e) {
-    status.textContent = 'הפרסום נכשל, נסו שוב';
+    throw new Error('החיבור לגוגל: ' + (restErr && restErr.message ? restErr.message : 'חסום') + ' | GitHub: ' + (e && e.message ? e.message : e));
+  }
+  setCacheFromFilePosts(saved, await getServerNow());
+  return 'פורסם ✓ יופיע אצל כולם תוך דקה-שתיים';
+}
+
+window.communitySubmitPost = async function() {
+  const isAlbum = communityPostMode === 'album';
+  const caption = (document.getElementById('c_caption').value || '').trim();
+  const title = isAlbum ? ((document.getElementById('c_title') || {}).value || '').trim() : '';
+  const files = isAlbum ? albumOrderedFiles() : Array.from(document.getElementById('c_file').files || []);
+  const status = document.getElementById('c_post_status');
+  const btn = document.getElementById('c_post_btn');
+  if (isAlbum) {
+    if (!title) { status.textContent = 'נא לכתוב כותרת לכתבה'; return; }
+    if (!files.length) { status.textContent = 'נא לבחור תמונות לכתבה'; return; }
+  } else if (!caption && files.length === 0) { status.textContent = 'נא להוסיף תמונה או כיתוב'; return; }
+
+  btn.disabled = true;
+  status.textContent = '';
+  try {
+    const baseMs = await getServerNow();
+    const albumId = isAlbum ? 'al' + baseMs : null;
+    const specs = [];
+    if (files.length === 0) {
+      specs.push({ caption: caption, image: null, createdMs: baseMs });
+    } else {
+      for (let i = 0; i < files.length; i++) {
+        btn.textContent = `מכין תמונות... (${i + 1}/${files.length})`;
+        const sp = { caption: i === 0 ? caption : '', image: await communityCompressImage(files[i]), createdMs: baseMs + i };
+        if (isAlbum) { sp.album = albumId; sp.albumTitle = title; sp.albumOrder = i; }
+        specs.push(sp);
+      }
+    }
+    const msg = await publishPostSpecs(specs, btn);
+    if (isAlbum) { albumFiles = []; albumCoverIdx = 0; }
+    communityRenderBoard();
+    const st = document.getElementById('c_post_status');
+    if (st) st.textContent = msg;
+  } catch (e) {
+    status.textContent = 'הפרסום נכשל: ' + (e && e.message ? e.message : e);
     btn.disabled = false;
     btn.textContent = 'פרסום';
   }

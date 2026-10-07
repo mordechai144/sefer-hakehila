@@ -1062,12 +1062,33 @@ function loadDeleted() {
 }
 function saveDeleted(set) { localStorage.setItem('deletedIdx', JSON.stringify([...set])); }
 
+// contacts the admin deleted for everyone (kept on the server; a copy is remembered on the device)
+function contactKey(c) {
+  return [c.first || '', c.last || '', c.phone || ''].map(x => String(x).trim()).join('|');
+}
+window.globalDeletedContacts = (function() {
+  try { return new Set(JSON.parse(localStorage.getItem('globalDeletedContacts') || '[]')); }
+  catch (e) { return new Set(); }
+})();
+function notGloballyDeleted(c) { return !window.globalDeletedContacts.has(contactKey(c)); }
+window.applyGlobalDeleted = function(list) {
+  const set = new Set(list || []);
+  const cur = window.globalDeletedContacts;
+  if (set.size === cur.size && [...set].every(k => cur.has(k))) return;
+  window.globalDeletedContacts = set;
+  try { localStorage.setItem('globalDeletedContacts', JSON.stringify([...set])); } catch (e) {}
+  rebuildAll();
+  const sb = document.getElementById('searchBox');
+  if (typeof render === 'function') render(sb ? sb.value : '');
+};
+
 let allContacts = [];
 function rebuildAll() {
   const deleted = loadDeleted();
   const base = baseContacts
     .map((c, i) => ({...c, id: 'b'+i, city: extractCity(c.address)}))
-    .filter(c => !deleted.has(c.id));
+    .filter(c => !deleted.has(c.id))
+    .filter(notGloballyDeleted);
   const extra = loadExtra().map(c => ({...c, city: extractCity(c.address)}));
   allContacts = base.concat(extra);
   allContacts.sort((a,b) => (a.last||a.first).localeCompare(b.last||b.first, 'he'));
@@ -1638,7 +1659,8 @@ function render(filter) {
   } else if (currentTab === 'favorites') {
     renderFavoritesList(container, q);
   } else if (currentTab === 'abroad') {
-    renderContactsList(container, abroadContacts, q, abroadContacts.length);
+    const abroadVisible = abroadContacts.filter(notGloballyDeleted);
+    renderContactsList(container, abroadVisible, q, abroadVisible.length);
   }
 }
 
@@ -1652,6 +1674,7 @@ function closeAllOverlays() {
 }
 
 function showDetail(c) {
+  window._detailContact = c;
   const modal = document.getElementById('detailModal');
   modal.innerHTML = `
     <div class="modal-header">
@@ -1673,6 +1696,20 @@ function showDetail(c) {
 }
 
 function deleteContact(id) {
+  const c = window._detailContact;
+  const isLocalExtra = id && loadExtra().some(x => x.id === id);
+  if (c && !isLocalExtra && window.isAdminUser && window.globalDeleteContact) {
+    if (!confirm('למחוק את ' + fullName(c) + ' מספר הקהילה אצל כולם?')) return;
+    const btn = document.querySelector('#detailModal .delete-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'מוחק...'; }
+    window.globalDeleteContact(contactKey(c))
+      .then(() => closeAllOverlays())
+      .catch(e => {
+        alert('המחיקה נכשלה: ' + (e && e.message ? e.message : e));
+        if (btn) { btn.disabled = false; btn.textContent = 'מחק איש קשר'; }
+      });
+    return;
+  }
   if (!confirm('למחוק את איש הקשר?')) return;
   if (id.startsWith('b')) {
     const deleted = loadDeleted();
@@ -2085,7 +2122,7 @@ async function ghReadNewsFile(token) {
   const r = await ghFetch(GH_BASE + 'news.json?ref=main&t=' + Date.now(), { headers: ghHeaders(token, true), cache: 'no-store' });
   if (!r.ok) throw new Error(ghErrorText(r.status));
   const j = await r.json();
-  return { sha: existing.sha, posts: j.posts || [] };
+  return { sha: existing.sha, posts: j.posts || [], deletedContacts: j.deletedContacts || [] };
 }
 
 // read → change → write, with a retry if someone else saved at the same moment
@@ -2096,7 +2133,8 @@ async function ghUpdateNews(token, change, message) {
     const posts = change(cur.posts, now)
       .filter(p => p && typeof p.createdMs === 'number')
       .sort((a, b) => b.createdMs - a.createdMs);
-    const payload = JSON.stringify({ updatedAt: now, posts: posts });
+    const deletedContacts = Array.from(new Set((cur.deletedContacts || []).concat(window.globalDeletedKeysServer || [])));
+    const payload = JSON.stringify({ updatedAt: now, posts: posts, deletedContacts: deletedContacts });
     const body = { message: message, content: btoa(unescape(encodeURIComponent(payload))), branch: 'main' };
     if (cur.sha) body.sha = cur.sha;
     const put = await ghFetch(GH_BASE + 'news.json', {
@@ -2194,6 +2232,70 @@ function albumFields(src) {
   }
   return o;
 }
+
+// ===== Contacts deleted for everyone =====
+// stored in one special record inside the news collection (so no new server permissions are needed)
+const DELETED_CONTACTS_DOC = 'zz_deleted_contacts';
+window.globalDeletedKeysServer = null;
+
+function restStringArray(v) {
+  return ((v && v.arrayValue && v.arrayValue.values) || []).map(x => x.stringValue).filter(Boolean);
+}
+
+async function fetchGlobalDeleted() {
+  try {
+    const r = await withTimeout(fetch(FS_REST + 'community_posts/' + DELETED_CONTACTS_DOC + '?key=' + firebaseConfig.apiKey, { cache: 'no-store' }), 10000);
+    if (r.status === 404) return [];
+    if (r.ok) {
+      const j = await r.json();
+      return restStringArray(j.fields && j.fields.keys);
+    }
+  } catch (e) { /* try the backup file */ }
+  try {
+    const r = await withTimeout(fetch('news.json?t=' + Date.now(), { cache: 'no-store' }), 10000);
+    if (r.ok) {
+      const j = await r.json();
+      if (Array.isArray(j.deletedContacts)) return j.deletedContacts;
+    }
+  } catch (e) {}
+  return null;
+}
+
+async function refreshGlobalDeleted() {
+  const list = await fetchGlobalDeleted();
+  if (list) {
+    window.globalDeletedKeysServer = list;
+    window.applyGlobalDeleted(list);
+  }
+}
+
+window.globalDeleteContact = async function(key) {
+  if (!auth.currentUser) throw new Error('צריך להתחבר כמנהל');
+  let current = await fetchGlobalDeleted();
+  if (!current) current = Array.from(window.globalDeletedContacts);
+  const list = Array.from(new Set(current.concat([key])));
+  if (await firestoreReachable()) {
+    await setDoc(doc(db, 'community_posts', DELETED_CONTACTS_DOC),
+      { kind: 'deletedContacts', keys: arrayUnion(key) }, { merge: true });
+  } else {
+    const url = FS_REST + 'community_posts/' + DELETED_CONTACTS_DOC + '?key=' + firebaseConfig.apiKey +
+      '&updateMask.fieldPaths=kind&updateMask.fieldPaths=keys';
+    const r = await withTimeout(fetch(url, {
+      method: 'PATCH',
+      headers: await restHeaders(true),
+      body: JSON.stringify({ fields: {
+        kind: { stringValue: 'deletedContacts' },
+        keys: { arrayValue: { values: list.map(k => ({ stringValue: k })) } }
+      } })
+    }), 15000);
+    if (!r.ok) throw new Error('השמירה נכשלה (' + r.status + ')');
+  }
+  window.globalDeletedKeysServer = list;
+  window.applyGlobalDeleted(list);
+  if (localStorage.getItem('ghToken')) syncNewsFile(false);
+};
+
+setTimeout(refreshGlobalDeleted, 300);
 
 function isGhPost(id) { return String(id || '').startsWith('gh_'); }
 
@@ -2295,6 +2397,7 @@ async function communityLoadPosts(attempt) {
     communityPostsCache = [];
     let totalDocs = 0, noCreatedAt = 0, tooOld = 0;
     snap.forEach(docSnap => {
+      if (docSnap.id === DELETED_CONTACTS_DOC) return;
       totalDocs++;
       const data = docSnap.data();
       const created = postTimeMs(data);

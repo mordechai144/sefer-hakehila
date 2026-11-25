@@ -6,6 +6,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@900&display=swap" rel="stylesheet">
 <meta charset="UTF-8">
+<meta name="site-version" content="2026-11-25b">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
@@ -1044,6 +1045,41 @@
 <script id="favoritesData" type="application/json">[{"first": "הר\"ר ישראל נח", "last": "רוב", "phone": "050-4101102", "address": "י ל פרץ, 24 קרית אתא", "notes": "ב\"ר זושא ח' ר' ש שפילברג"}, {"first": "הרב בן ציון", "last": "הריס", "phone": "053-3197010", "address": "עמרם גאון, 4/11 ירושלים", "notes": "טלפון נוסף: 02-5663505"}, {"first": "הר\"ר יעקב", "last": "וייס", "phone": "052-7693557", "address": "המיסדים, 36 קרית אתא", "notes": "ח\"ר' ש פריד"}, {"first": "הר\"ר יצחק יחיאל", "last": "בוים", "phone": "054-8485900", "address": "נורדאו, 40 קרית אתא", "notes": "טלפון נוסף: 054-8485800, 04-8440890"}, {"first": "הר\"ר יוסף צבי", "last": "פריד", "derech": "ב\"ר שמואל", "phone": "050-4111831", "address": "בית לחם 6, קרית אתא", "notes": "טלפון נוסף: 053-3100273"}]</script>
 <script>
 // ---- refresh button: loads the newest version of the site, skipping old copies ----
+// ---- automatic update: when a newer version of the site exists, load it by itself ----
+(function() {
+  const meta = document.querySelector('meta[name="site-version"]');
+  const mine = meta ? meta.content : '';
+  if (!mine) return;
+  let checking = false;
+  function busy() {
+    const a = document.activeElement;
+    if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return true;
+    return !!document.querySelector('.register-overlay.show, .overlay.show, #albumView, #imageViewer[style*="flex"]');
+  }
+  async function check() {
+    if (checking || !navigator.onLine) return;
+    checking = true;
+    try {
+      const r = await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return;
+      const html = await r.text();
+      const m = html.match(/<meta name="site-version" content="([^"]+)"/);
+      const latest = m ? m[1] : '';
+      if (!latest || latest === mine) return;
+      let tried = '';
+      try { tried = sessionStorage.getItem('autoUpdateTried') || ''; } catch (e) {}
+      if (tried === latest) return;            // already reloaded once for this version
+      if (busy()) return;                      // never interrupt typing
+      try { sessionStorage.setItem('autoUpdateTried', latest); } catch (e) {}
+      refreshSite();
+    } catch (e) {
+    } finally { checking = false; }
+  }
+  setTimeout(check, 2500);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+  setInterval(check, 30 * 60 * 1000);
+})();
+
 async function refreshSite() {
   const btn = document.getElementById('refreshBtn');
   if (btn) btn.classList.add('spin');

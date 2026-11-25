@@ -973,15 +973,6 @@
     <div id="reg_status" style="font-size:12px;color:#a33;margin-top:8px;height:14px;text-align:center;"></div>
   </div>
 </div>
-<div class="register-overlay" id="nameOverlay">
-  <div class="register-box">
-    <div class="register-title">שלום!</div>
-    <div class="register-sub">כדי שנכיר – מה שמך? (פעם אחת בלבד)</div>
-    <div class="form-group"><label>שם פרטי ומשפחה</label><input id="name_only" autocomplete="name"></div>
-    <button class="btn-primary" style="width:100%;margin-top:10px;" onclick="submitNameOnly()">המשך</button>
-    <div id="name_status" style="font-size:12px;color:#a33;margin-top:8px;height:14px;text-align:center;"></div>
-  </div>
-</div>
 <div id="imageViewer" onclick="closeImageViewer()" style="display:none;position:fixed;inset:0;z-index:9990;background:rgba(0,0,0,0.92);align-items:center;justify-content:center;padding:12px;">
   <button onclick="closeImageViewer()" style="position:absolute;top:14px;left:16px;background:none;border:none;color:#fff;font-size:34px;cursor:pointer;line-height:1;">&times;</button>
   <img id="imageViewerImg" src="" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;">
@@ -1933,20 +1924,11 @@ setTimeout(() => {
     let knownName = '', adminDev = false;
     try { knownName = localStorage.getItem('visitorName') || ''; adminDev = localStorage.getItem('adminDevice') === '1'; } catch (e) {}
     if (!knownName && !adminDev && !window.isAdminUser) {
-      const no = document.getElementById('nameOverlay');
-      if (no) no.classList.add('show');
+      const reg = document.getElementById('registerOverlay');
+      if (reg) reg.classList.add('show');
     }
   }
 }, 27800);
-
-function submitNameOnly() {
-  const input = document.getElementById('name_only');
-  const name = (input.value || '').trim();
-  if (name.length < 2) { document.getElementById('name_status').textContent = 'נא לכתוב שם'; return; }
-  try { localStorage.setItem('visitorName', name); } catch (e) {}
-  document.getElementById('nameOverlay').classList.remove('show');
-  try { window.logDailyVisit && window.logDailyVisit(true); } catch (e) {}
-}
 
 </script>
 
